@@ -120,7 +120,7 @@ function dsRefFor(spec: { datasource_uid?: string }, all: DataSourceInfo[], warn
   return { uid: ds.uid, type: ds.type };
 }
 
-function buildTargets(p: PanelSpec, ds: { uid: string; type?: string } | undefined) {
+export function buildTargets(p: PanelSpec, ds: { uid: string; type?: string } | undefined) {
   const refIds = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   return (p.queries ?? []).map((q, i) => {
     const base: Record<string, any> = { refId: refIds[i] ?? `Q${i}`, datasource: ds };
@@ -134,7 +134,7 @@ function buildTargets(p: PanelSpec, ds: { uid: string; type?: string } | undefin
   });
 }
 
-function buildPanel(p: PanelSpec, id: number, all: DataSourceInfo[], warnings: string[]) {
+export function buildPanel(p: PanelSpec, id: number, all: DataSourceInfo[], warnings: string[]) {
   const where = `panel "${p.title}"`;
   const type: PanelKind = PANEL_TYPES.includes(p.type) ? p.type : 'timeseries';
   if (type !== p.type) {
@@ -201,7 +201,7 @@ function buildPanel(p: PanelSpec, id: number, all: DataSourceInfo[], warnings: s
   return panel;
 }
 
-function buildVariable(v: VariableSpec, all: DataSourceInfo[], warnings: string[]) {
+export function buildVariable(v: VariableSpec, all: DataSourceInfo[], warnings: string[]) {
   const base: Record<string, any> = { name: v.name, label: v.label ?? v.name, type: v.type, hide: 0, skipUrlSync: false };
   switch (v.type) {
     case 'query': {
@@ -239,7 +239,7 @@ function buildVariable(v: VariableSpec, all: DataSourceInfo[], warnings: string[
 }
 
 /** Packs panels left-to-right into a 24-column grid, grouped under rows. Returns next free y. */
-function layout(panels: Array<{ spec: PanelSpec; json: Record<string, any> }>, startY: number, nextId: () => number) {
+export function layout(panels: Array<{ spec: PanelSpec; json: Record<string, any> }>, startY: number, nextId: () => number) {
   const out: Array<Record<string, any>> = [];
   const groups = new Map<string, typeof panels>();
   for (const p of panels) {
@@ -283,7 +283,7 @@ export function wildcardVars(expr: string): string {
     .replace(/\$\{(?!__)\w+(?::\w+)?\}|\$(?!__)\w+/g, '.+');
 }
 
-async function checkQueries(ctx: ToolContext, specs: PanelSpec[], all: DataSourceInfo[], dsVars: Map<string, string>): Promise<QueryCheck[]> {
+export async function checkQueries(ctx: ToolContext, specs: PanelSpec[], all: DataSourceInfo[], dsVars: Map<string, string>): Promise<QueryCheck[]> {
   const jobs: Array<() => Promise<QueryCheck>> = [];
   const range = { from: ctx.now() - 3600_000, to: ctx.now() };
   for (const p of specs) {

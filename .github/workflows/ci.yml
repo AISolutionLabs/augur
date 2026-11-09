@@ -63,3 +63,12 @@ jobs:
         with:
           name: augur-claude-datasource
           path: augur-datasource/dist
+
+  grafana12-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: augur-app/.nvmrc
+      - run: scripts/check-grafana12.sh

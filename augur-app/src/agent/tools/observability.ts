@@ -4,6 +4,7 @@ import { ToolDefinition } from '../types';
 import { autoStepSeconds, iso, parseDurationSeconds, resolveRange } from '../time';
 import { clip, framesOf, isLogFrame, summarizeLogs, summarizeTable, summarizeTimeSeries } from '../frames';
 import { dsQuery, dsResource, findDataSource, LOKI_TYPES, PROM_TYPES, TEMPO_TYPES } from '../grafana';
+import { exploreUrl } from '../links';
 
 const timeProps = {
   start: { type: 'string', description: 'Start: relative (now-1h), RFC3339, or epoch. Defaults to the conversation time range.' },
@@ -67,7 +68,8 @@ export const promQuery: ToolDefinition = {
       range
     );
     const header = `Range ${iso(range.from)} → ${iso(range.to)}, step ${step}s\n`;
-    return clip(header + summarizeTimeSeries(framesOf(resp), { samples: input.instant ? 1 : 12 }));
+    const link = `\nExplore: ${exploreUrl(ds, { expr: input.expr, range: !input.instant, instant: !!input.instant }, range.from, range.to)}`;
+    return clip(header + summarizeTimeSeries(framesOf(resp), { samples: input.instant ? 1 : 12 })) + link;
   },
 };
 
@@ -172,10 +174,11 @@ export const lokiQuery: ToolDefinition = {
     );
     const frames = framesOf(resp);
     const header = `Range ${iso(range.from)} → ${iso(range.to)}\n`;
+    const link = `\nExplore: ${exploreUrl(ds, { expr: input.expr, queryType: 'range' }, range.from, range.to)}`;
     if (frames.some(isLogFrame)) {
-      return clip(header + summarizeLogs(frames.filter(isLogFrame), limit));
+      return clip(header + summarizeLogs(frames.filter(isLogFrame), limit)) + link;
     }
-    return clip(header + summarizeTimeSeries(frames));
+    return clip(header + summarizeTimeSeries(frames)) + link;
   },
 };
 
@@ -262,7 +265,8 @@ export const tempoSearch: ToolDefinition = {
     const range = resolveRange(input, ctx.timeRange, ctx.now());
     const limit = Math.min(Math.max(Number(input.limit) || 20, 1), 50);
     const resp = await dsQuery(ctx, ds, { queryType: 'traceql', query: input.traceql, limit, tableType: 'traces', spss: 3 }, range);
-    return clip(summarizeTable(framesOf(resp), limit));
+    const link = `\nExplore: ${exploreUrl(ds, { queryType: 'traceql', query: input.traceql, limit }, range.from, range.to)}`;
+    return clip(summarizeTable(framesOf(resp), limit)) + link;
   },
 };
 
@@ -284,6 +288,7 @@ export const tempoGetTrace: ToolDefinition = {
     const range = resolveRange({ start: input.start ?? 'now-7d', end: input.end ?? 'now' }, ctx.timeRange, ctx.now());
     const resp = await dsQuery(ctx, ds, { queryType: 'traceql', query: String(input.trace_id).trim() }, range);
     const frames = framesOf(resp);
+    const traceLink = exploreUrl(ds, { queryType: 'traceql', query: String(input.trace_id).trim() }, range.from, range.to);
     const f = frames.find((x) => (x.schema?.fields ?? []).some((fl) => fl.name === 'spanID')) ?? frames[0];
     if (!f) {
       return 'Trace not found.';
@@ -326,6 +331,7 @@ export const tempoGetTrace: ToolDefinition = {
         ...errs.slice(0, 15).map(line),
         'Slowest spans:',
         ...slow.map(line),
+        `Explore: ${traceLink}`,
       ].join('\n')
     );
   },

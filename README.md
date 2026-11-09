@@ -2,15 +2,40 @@
 
 **AI investigations for Grafana, powered by Claude.**
 
-Augur adds a Claude-powered assistant inside Grafana OSS and Enterprise. Use it to:
+Augur adds a Claude-powered observability engineer to self-hosted Grafana (OSS or Enterprise, **12.0+**). It is docked on every page and can:
 
-- **Chat** about your metrics, logs, traces, dashboards and alerts.
-- **Investigate** incidents: Augur works through Mimir/Prometheus, Loki, Tempo, alert rules, alert state history and annotations, correlates what it finds, and writes a root-cause report with evidence.
-- **Build dashboards** from a description or from an investigation. Each query is dry-run against your data first, and nothing is saved until you click **Save**.
+- **Chat** about your metrics, logs, traces, profiles, dashboards and alerts, with an Explore link behind every claim.
+- **Investigate** incidents end to end: parallel specialist sub-agents work across Mimir/Prometheus, Loki, Tempo, Pyroscope, alert rules, state history and deploy annotations. A hypothesis board tracks candidate causes, and the leading one is deliberately challenged before Augur concludes. The result is a root-cause report you can save to Grafana.
+- **Act, with your approval:** build new dashboards, edit existing ones, draft silences and alert rules. Queries are dry-run against real data first. Nothing changes until you click.
+- **Use your team's knowledge:** org-wide **rules**, runbook **skills** (also runnable as `/commands`), an **infrastructure memory** of services and dependencies, past investigations, and your own tools through **MCP servers**.
 
-Everything runs inside your Grafana. Telemetry queries run **as the signed-in user** through Grafana's own query API, so Grafana RBAC still applies. Model calls go through your own gateway (LiteLLM, the Anthropic API, or any Claude Messages-compatible endpoint), authenticated with **either a gateway API key or each user's own OAuth/OIDC token** (e.g. Entra ID).
+Data queries run **as the signed-in user** through Grafana's own APIs, so Grafana RBAC applies. Model calls go through your gateway (LiteLLM, the Anthropic API, or any Claude Messages-compatible endpoint), using **either a gateway API key or each user's own OAuth/OIDC token** (e.g. Entra ID). Nothing leaves your network except the model call you configure.
 
-> Grafana is a trademark of Raintank, Inc. (Grafana Labs). Claude is a trademark of Anthropic, PBC. Augur is an independent open-source project and is not affiliated with or endorsed by either company.
+> Grafana is a trademark of Raintank, Inc. (Grafana Labs). Claude is a trademark of Anthropic, PBC. Augur is an independent open-source project, not affiliated with or endorsed by either.
+
+---
+
+## Augur and Grafana Assistant
+
+Grafana Assistant is Grafana Labs' commercial agent. On self-managed Grafana it runs through a Grafana Cloud stack, which provides its backend, limits and billing. Grafana's documentation lists Investigations, infrastructure memory, Automations and the Slack integration as *not available* on self-managed Grafana ([docs](https://grafana.com/docs/grafana/latest/ai-tools/grafana-assistant/self-managed/)).
+
+| Capability on self-managed Grafana | Grafana Assistant (on-prem) | Augur |
+|---|---|---|
+| Chat, query writing and explanation, navigation | ✓ | ✓ (with Explore/dashboard/alert links) |
+| Create dashboards | ✓ | ✓ (queries dry-run before you see the draft) |
+| Edit existing dashboards | ✓ | ✓ (change list, version-guarded apply, rollback via version history) |
+| Rules and skills | ✓ | ✓ (also provisionable from Git; `/commands`) |
+| MCP server integrations | ✓ | ✓ (proxied server-side; approval for non-read-only tools) |
+| Investigations | ✗ (Cloud only) | ✓ (sub-agents, hypothesis board, challenge step, saved reports) |
+| Infrastructure memory | ✗ (Cloud only) | ✓ (scan of metrics/logs/traces + Tempo service graph) |
+| Alerting actions | silences and routing (per Grafana Cloud guides) | draft silences (with live match preview) and alert rules |
+| Profiles (Pyroscope) | not listed for self-managed | ✓ |
+| Automations / scheduled runs, Slack | ✗ (Cloud only) | not yet (roadmap) |
+| Where data and prompts go | your Grafana ↔ Grafana Cloud ↔ LLM provider | your Grafana ↔ **your** gateway |
+| Model / identity | Grafana-managed | your choice; per-user OAuth possible |
+| Cost | per-user Grafana Cloud pricing | open source (MIT) + your model usage |
+
+Grafana Assistant has more polish and integrations inside Grafana Cloud. Augur aims to make self-hosted Grafana self-sufficient.
 
 ---
 
@@ -19,190 +44,177 @@ Everything runs inside your Grafana. Telemetry queries run **as the signed-in us
 ```mermaid
 flowchart LR
   subgraph Browser["Grafana UI (signed-in user)"]
-    A[Augur app<br/>chat · investigate · dashboards]
+    A[Augur app / sidebar<br/>agent, sub-agents, proposals]
   end
   subgraph Grafana["Grafana server"]
-    Q["/api/ds/query + datasource resources<br/>(user's RBAC)"]
+    Q["Grafana APIs<br/>/api/ds/query, dashboards, alerting,<br/>annotations (user's RBAC)"]
     D["Claude (Augur) datasource<br/>Go backend"]
   end
-  A -- "tool calls: PromQL / LogQL / TraceQL,<br/>dashboards, alerts, annotations" --> Q
-  Q --> M[(Mimir / Prometheus)]
-  Q --> L[(Loki)]
-  Q --> T[(Tempo)]
-  A -- "/v1/messages (no credentials in browser)" --> D
-  D -- "API key  —or—  user's forwarded OAuth token" --> G["LiteLLM / Anthropic API / gateway"]
+  A -- "PromQL / LogQL / TraceQL / profiles,<br/>dashboards, alerts" --> Q
+  Q --> M[(Mimir / Prometheus)] & L[(Loki)] & T[(Tempo)] & P[(Pyroscope)]
+  A -- "/messages, /mcp/*" --> D
+  D -- "API key or user's OAuth token" --> G["LiteLLM / Anthropic / gateway"]
+  D -- "MCP (streamable HTTP)" --> X["Your MCP servers<br/>GitHub, ADO, k8s, wiki…"]
 ```
 
-The project ships two plugins, because Grafana only forwards a user's OAuth token to **datasource** plugins:
-
-| Plugin | ID | What it does |
+| Plugin | ID | Role |
 |---|---|---|
-| Augur app | `augur-assistant-app` | The UI and the agent: chat, the investigation timeline, the findings panel, dashboard drafts, report export, and panel-menu / alert / command-palette entry points. Frontend only. |
-| Claude (Augur) datasource | `augur-claude-datasource` | A small Go proxy for the Claude Messages API. It adds credentials server-side, enforces a model allow-list and output-token cap, and attributes usage (`metadata.user_id`). |
+| Augur app | `augur-assistant-app` | UI and agent: page and sidebar chat, investigations, proposal cards, settings (rules, skills, memory). Frontend only. |
+| Claude (Augur) datasource | `augur-claude-datasource` | Go backend: Claude Messages proxy (credentials server-side, model allow-list, token cap) and the MCP client. |
 
-### Tools available to the model
+There are two plugins because Grafana only forwards a user's OAuth token to *datasource* plugins.
 
-Every tool is read-only except dashboard drafting, and a draft is only saved when the user clicks Save.
+### Tools the model can use
 
 | Area | Tools |
 |---|---|
-| Discovery | `list_datasources`, `search_dashboards`, `get_dashboard`, `list_folders` |
-| Metrics (Prometheus/Mimir/Thanos/Cortex) | `prometheus_metric_names`, `prometheus_labels`, `query_prometheus` |
-| Logs (Loki) | `loki_labels`, `query_loki` (log and metric queries), `loki_patterns` |
-| Traces (Tempo) | `tempo_tag_values`, `search_traces` (TraceQL), `get_trace` (error and slowest spans) |
-| Grafana | `run_panel_queries` (reuse curated panel queries with variables resolved), `list_alerts`, `alert_state_history`, `get_annotations` |
-| Investigation | `record_finding` (populates the live findings panel) |
-| Dashboards | `draft_dashboard` (spec → valid JSON, grid layout, variables, query dry-run) |
-
-Results are summarised before they reach the model (series stats, peak times, downsampled samples, newest log lines, span summaries) and capped in size. Older tool output is compacted in long investigations, and prompt caching is applied automatically.
+| Discovery | `list_datasources`, `search_dashboards`, `get_dashboard`, `list_folders`, `get_infrastructure_memory` |
+| Metrics | `prometheus_metric_names`, `prometheus_labels`, `query_prometheus` |
+| Logs | `loki_labels`, `query_loki`, `loki_patterns` |
+| Traces | `tempo_tag_values`, `search_traces`, `get_trace` |
+| Profiles | `query_profiles` (Pyroscope: hottest functions by self/total) |
+| Grafana | `run_panel_queries`, `list_alerts`, `alert_state_history`, `get_annotations`, `list_silences` |
+| Knowledge | `search_skills`, `read_skill`, `search_past_investigations`, `read_past_investigation` |
+| Investigation | `delegate` (parallel sub-agents), `update_hypothesis`, `record_finding` |
+| Proposals (user applies) | `draft_dashboard`, `propose_dashboard_edit`, `draft_silence`, `draft_alert_rule` |
+| MCP | `mcp__<server>__<tool>` for every tool your MCP servers expose |
 
 ---
 
 ## Install
 
-Requires **Grafana 13.0+** (OSS or Enterprise).
+Requires **Grafana 12.0 or later** (OSS or Enterprise). The same build runs on 12.x and 13.x.
 
-### From a release
-
-1. Download `augur-assistant-app-<version>.zip` and `augur-claude-datasource-<version>.zip` from [Releases](https://github.com/AISolutionLabs/augur/releases).
-2. Unzip both into your Grafana plugins directory (e.g. `/var/lib/grafana/plugins`).
-3. Until the plugins are signed, allow them to load unsigned:
+1. Download `augur-assistant-app-<version>.zip` and `augur-claude-datasource-<version>.zip` from [Releases](https://github.com/AISolutionLabs/augur/releases), and unzip both into your plugins directory.
+2. Until signed, allow them:
    ```ini
    [plugins]
    allow_loading_unsigned_plugins = augur-assistant-app,augur-claude-datasource
    ```
-   or set `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=augur-assistant-app,augur-claude-datasource`.
-4. Restart Grafana, then enable the **Augur** app under *Administration → Plugins*.
+3. Restart Grafana, enable the **Augur** app, and add a **Claude (Augur)** datasource.
 
-On Kubernetes with the Grafana Helm chart, either use `plugins:` with the release zip URLs, or bake both plugins into your image.
+The docked sidebar uses Grafana's extension sidebar. On Grafana versions without it, every entry point (panel menu, Explore, alerts, command palette) opens the full Augur page instead.
 
-### Try it locally (with a demo LGTM stack)
-
-```bash
-make build                      # builds both plugins into */dist
-export ANTHROPIC_API_KEY=sk-ant-...   # or point the datasource at your LiteLLM
-docker compose -f deploy/docker-compose.yaml up
-```
-
-Then open http://localhost:3000 (admin/admin) → **Augur**. The compose file uses `grafana/otel-lgtm`, which provides Grafana, Prometheus, Loki and Tempo with sample telemetry already provisioned.
+**Local demo:** `make build && export ANTHROPIC_API_KEY=… && docker compose -f deploy/docker-compose.yaml up`, then open http://localhost:3000 (admin/admin). This runs `grafana/otel-lgtm` with sample telemetry.
 
 ---
 
-## Configure the Claude datasource
+## Configure
 
-*Connections → Data sources → Add → Claude (Augur).*
+### Claude datasource
 
 | Setting | Notes |
 |---|---|
-| URL | Base URL of the gateway, e.g. `https://litellm.example.internal` or `https://api.anthropic.com` |
-| Messages / Models path | Defaults `/v1/messages`, `/v1/models` (both supported by LiteLLM and Anthropic) |
-| Auth: **API key** | Stored encrypted. Sent as `Authorization: Bearer` (LiteLLM virtual keys) or `x-api-key` (Anthropic). |
-| Auth: **Forward OAuth token** | Sends each signed-in user's own **access token** or **ID token**. Requires Grafana login via OAuth/OIDC. |
-| Default / allowed models | Model names as your gateway knows them. Users can choose among them; anything else is rejected server-side. |
-| Max output tokens, timeout | Server-side caps |
-
-### Provisioning
+| URL | e.g. `https://litellm.example.internal` or `https://api.anthropic.com` |
+| Auth: **API key** | Encrypted. Sent as `Authorization: Bearer` (LiteLLM) or `x-api-key` (Anthropic). |
+| Auth: **Forward OAuth token** | Each user's own access token or ID token. Requires Grafana login via OAuth/OIDC. |
+| Models | Default and allowed models; anything else is rejected server-side. |
+| MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, and approval policy. |
 
 ```yaml
 apiVersion: 1
 datasources:
-  # Shared gateway key
   - name: Claude
     uid: claude
     type: augur-claude-datasource
     url: https://litellm.example.internal
     jsonData:
-      authMethod: apiKey
-      apiKeyHeader: authorization     # or x-api-key for api.anthropic.com
+      authMethod: oauth            # or apiKey
+      oauthPassThru: true
+      oauthTokenType: access       # or id
       defaultModel: claude-sonnet-5-5
       allowedModels: [claude-opus-5-5, claude-haiku-5-5]
-      maxTokens: 8192
+      mcpServers:
+        - name: github
+          url: https://mcp.example.internal/github/mcp
+          auth: bearer
+          allowedTools: ['get_*', 'search_*', 'list_*']
+        - name: ado
+          url: https://mcp.example.internal/ado/mcp
+          auth: oauth              # forwards the user's Entra token
     secureJsonData:
-      apiKey: ${LITELLM_API_KEY}
-
-  # Per-user identity (Entra ID / any OIDC)
-  - name: Claude (my identity)
-    uid: claude-oauth
-    type: augur-claude-datasource
-    url: https://litellm.example.internal
-    jsonData:
-      authMethod: oauth
-      oauthPassThru: true            # Grafana's flag to forward the user's token
-      oauthTokenType: access         # or id
-      defaultModel: claude-sonnet-5-5
+      mcpToken_github: ${GITHUB_MCP_TOKEN}
 ```
 
-### Forwarding Entra ID tokens to LiteLLM
+**Forwarding Entra ID tokens to LiteLLM:** add your gateway's API scope to Grafana's OAuth scopes (`[auth.azuread] scopes = openid email profile offline_access api://<litellm-app-id>/.default`) so the access token's audience is the gateway. Alternatively, forward the ID token (its audience is Grafana's client ID). Then validate the token in LiteLLM against your tenant's JWKS and map its claims to teams. If no token is forwarded, requests fail with a clear 401; Augur never falls back to a shared key.
 
-With OAuth forwarding, your gateway sees the real user, so per-user and per-team routing, budgets and audit logs work unchanged.
+### Rules, skills and settings (app)
 
-1. Sign in to Grafana with Entra ID (`[auth.azuread]`).
-2. Pick which token to forward:
-   - **Access token (recommended):** Grafana requests Graph-scoped tokens by default, so add your gateway's API scope to Grafana's OAuth scopes so that the access token's `aud` is your gateway:
-     ```ini
-     [auth.azuread]
-     scopes = openid email profile offline_access api://<litellm-app-id>/.default
-     ```
-     (Entra issues a token for a single resource per request; if you depend on Graph-scoped features in Grafana, use the ID token instead.)
-   - **ID token:** `aud` is Grafana's own client ID. Configure the gateway's JWT validation to accept that audience.
-3. In LiteLLM, validate the JWT against your tenant's JWKS (`JWT_PUBLIC_KEY_URL` / custom auth) and map claims (`oid`, `groups`, `roles`) to users and teams.
+*Administration → Plugins → Augur → Augur settings* (org admins), or provision them from Git:
 
-If no token is forwarded (a local-login user, or forwarding switched off), the request fails with a clear 401. Augur never falls back to a shared key.
+```yaml
+apiVersion: 1
+apps:
+  - type: augur-assistant-app
+    org_id: 1
+    jsonData:
+      investigationFolderUid: incident-reviews
+      enableSubAgents: true
+      rules:
+        - { id: prod, scope: all, enabled: true, text: 'Production is the "Mimir prod" datasource; cluster label is k8s_cluster.' }
+      skills:
+        - name: kafka-lag
+          title: Kafka consumer lag
+          description: Use when consumer lag alerts fire
+          enabled: true
+          body: |
+            1. Query kafka_consumergroup_lag by consumergroup and topic…
+```
+
+- **Rules** always apply. They can be scoped to chat, investigations or dashboards. Users can also add personal preferences, which are stored in their browser.
+- **Skills** are Markdown runbooks. Augur finds them while working (`search_skills`), and users run them as `/kafka-lag orders-topic`. Import `.md` files with front matter (`name`, `title`, `description`, `tags`).
+- **Infrastructure memory:** *Scan now* discovers services, namespaces and Tempo service-graph dependencies. It makes no model calls.
 
 ---
 
 ## Use it
 
-- **Nav → Augur.** Pick **Chat** or **Investigate**, a time range, and (if allowed) a model.
-- **Panel menu → Extensions → *Ask Claude about this panel* / *Investigate with Claude*.** Opens Augur with the panel's queries, dashboard and time range as context.
-- **Alert rule / alert instance actions → *Investigate with Claude*.**
-- **Command palette (Ctrl/Cmd+K) → *Ask Claude*.**
-
-**Investigate** runs a structured method (scope → discover → golden signals vs. baseline → logs → traces → correlate → falsify hypotheses), records findings live, and ends with a report: Summary, Timeline, Evidence (with queries), Root cause, Impact, Recommended actions, Open questions. **Export report** downloads the report as Markdown, together with the findings log and every query that was run.
-
-**Dashboards:** e.g. *"Build a RED dashboard for checkout with error logs and slow traces, variables for namespace and pod"*, or *"Turn this investigation into a dashboard"*. You get a draft card showing the layout, warnings, and which queries returned data. Choose a folder and click **Save as new dashboard**. Augur never overwrites an existing dashboard; extending one creates a copy.
+- **Sidebar:** open Augur from Grafana's sidebar on any dashboard, Explore or alert page and ask "what's wrong here?". It knows the page you're on.
+- **Panel menu:** *Ask Augur about this panel* / *Investigate with Augur*. **Explore toolbar:** *Ask Augur*. **Alert rules and instances:** *Investigate with Augur*. **Command palette:** *Ask Augur*.
+- **Investigate** mode shows live hypotheses and findings. Finish with **Save to Grafana**, which saves a dashboard containing the report, findings, hypotheses, evidence panels and annotations, using your folder permissions. Or use **Export report** (Markdown). Saved investigations become searchable memory for future ones.
+- **History:** previous conversations are available from the history menu, stored per browser.
 
 ### Permissions
 
-| Action | Grafana permission the user needs |
+| Action | Grafana permission needed (signed-in user) |
 |---|---|
-| Use Augur | Query permission on the Claude (Augur) datasource |
-| Query metrics/logs/traces | Query permission on those datasources |
-| Read dashboards, alerts, annotations | Normal read access; anything the user can't see, Augur can't see |
-| Save a drafted dashboard | Create permission in the chosen folder |
+| Use Augur | Query the Claude (Augur) datasource |
+| Query metrics/logs/traces/profiles | Query those datasources |
+| Save new dashboards or saved investigations | Create in the target folder |
+| Apply dashboard edits | Edit that dashboard |
+| Create silences / alert rules | Alerting silence / rule create permissions (Editor by default) |
+| Change org rules, skills, memory | Org admin |
 
 ---
 
-## Security notes
+## Security
 
-- Credentials never reach the browser. API keys are stored in `secureJsonData` and added by the Go backend, and browser-supplied `Authorization`/`x-api-key` headers are never forwarded. `extraHeaders` cannot override auth headers.
-- The backend only accepts a fixed set of Messages API fields, enforces the model allow-list and `max_tokens` cap, disables streaming, and limits request (8 MiB) and response (16 MiB) sizes.
-- Tool output (log lines, dashboard text, annotations) is passed to the model as untrusted data, and the system prompt tells the model never to follow instructions found there. The tools themselves are read-only, so the worst a prompt-injection can do is cause extra read queries or a dashboard *draft*.
-- Conversation state is kept in the browser tab's `sessionStorage` only. Augur adds no server-side storage.
+- Credentials never reach the browser. Browser-supplied `Authorization`/`x-api-key` headers are never forwarded, and `extraHeaders` cannot override auth.
+- The model cannot write anything itself. Dashboard, silence and alert changes are proposals that the user applies. Dashboard edits use Grafana's optimistic version check, so a concurrent change is never overwritten, and every save is restorable from version history.
+- MCP tools not annotated read-only require an explicit **Allow once** from the user. Admins can restrict tools per server with globs.
+- Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions.
+- The backend accepts a fixed set of Messages API fields and enforces the model allow-list, `max_tokens` cap and request/response size limits.
+- Conversations are stored only in the user's browser. Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
 
 ---
 
 ## Development
 
 ```
-augur-app/          # app plugin (React/TypeScript), the agent lives in src/agent
-augur-datasource/   # datasource plugin (Go backend + config editor)
+augur-app/          # app plugin (React/TS): src/agent (agent, tools), src/session, src/components
+augur-datasource/   # datasource plugin (Go backend: Messages proxy + MCP client; config editor)
 deploy/             # docker-compose demo with grafana/otel-lgtm
 ```
 
 ```bash
-make install   # npm ci in both packages
-make test      # jest (app + datasource) and go test
-make lint      # tsc + eslint
-make build     # frontend bundles + Go binaries for all platforms (needs mage)
-make package   # dist zips under ./release
+make install && make lint && make test && make package
 ```
 
-The agent is UI-independent (`src/agent/*`): tools take a `ToolContext` with an HTTP abstraction, so they are unit-tested against a fake Grafana API. `ChatPage.test.tsx` drives the full UI with a scripted model.
+The agent is UI-independent: tools take a `ToolContext` with an HTTP abstraction and are unit-tested against a fake Grafana API. `ChatPage.test.tsx` drives the whole UI with a scripted model (investigations, proposals, MCP approvals, history, sidebar). The Go tests cover both auth modes, the guardrails and an MCP server over JSON and SSE.
 
-### Signing
+**Signing:** `npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` (private signing). Community signing requires the ID prefix (`augur-`) to match your grafana.com org slug.
 
-To use the plugins without `allow_loading_unsigned_plugins`, sign them with a Grafana Cloud access policy token (`npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` for private signing). The plugin ID prefix (`augur-`) must match your grafana.com org slug for community signing; otherwise rename the IDs.
+**Roadmap:** scheduled automations and alert-triggered investigations (server-side runner), Slack, dashboard v2 schema editing, streaming responses.
 
 ## License
 

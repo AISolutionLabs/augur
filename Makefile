@@ -2,7 +2,7 @@ APP := augur-app
 DS  := augur-datasource
 VERSION ?= $(shell node -p "require('./$(APP)/package.json').version")
 
-.PHONY: install test lint build build-frontend build-backend package clean
+.PHONY: install test lint compat build build-frontend build-backend package clean
 
 install:
 	cd $(APP) && npm ci
@@ -17,6 +17,9 @@ lint:
 	cd $(APP) && npx tsc --noEmit && npx eslint src
 	cd $(DS) && npx tsc --noEmit && npx eslint src
 	cd $(DS) && go vet ./...
+
+compat:
+	scripts/check-grafana12.sh
 
 build-frontend:
 	cd $(APP) && npm run build

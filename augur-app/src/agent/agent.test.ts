@@ -181,7 +181,7 @@ describe('agent loop', () => {
     const events: AgentEvent[] = [];
     const msgs = await runAgent({
       call,
-      tools: buildToolset('chat', () => undefined),
+      tools: buildToolset('chat'),
       system: 'sys',
       messages: [{ role: 'user', content: 'how is it?' }],
       ctx: ctxWith(http),
@@ -204,7 +204,7 @@ describe('agent loop', () => {
       { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'query_prometheus', input: { datasource_uid: 'nope', expr: 'up' } }] },
       { content: [{ type: 'text', text: 'Datasource missing.' }] },
     ]);
-    await runAgent({ call, tools: buildToolset('chat', () => undefined), system: 's', messages: [{ role: 'user', content: 'q' }], ctx: ctxWith(fakeHttp(() => ({}))), onEvent: () => undefined, maxSteps: 5 });
+    await runAgent({ call, tools: buildToolset('chat'), system: 's', messages: [{ role: 'user', content: 'q' }], ctx: ctxWith(fakeHttp(() => ({}))), onEvent: () => undefined, maxSteps: 5 });
     const r = (requests[1].messages[2].content as any[])[0];
     expect(r.is_error).toBe(true);
     expect(r.content).toMatch(/not found/);
@@ -213,7 +213,7 @@ describe('agent loop', () => {
   it('enforces the step budget with a final no-tools call', async () => {
     const loop = { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x', name: 'list_datasources', input: {} }] } as any;
     const { call, requests } = scriptedModel([loop, { ...loop, content: [{ ...loop.content[0], id: 'y' }] }, { content: [{ type: 'text', text: 'final' }] }]);
-    await runAgent({ call, tools: buildToolset('chat', () => undefined), system: 's', messages: [{ role: 'user', content: 'q' }], ctx: ctxWith(fakeHttp(() => ({}))), onEvent: () => undefined, maxSteps: 2 });
+    await runAgent({ call, tools: buildToolset('chat'), system: 's', messages: [{ role: 'user', content: 'q' }], ctx: ctxWith(fakeHttp(() => ({}))), onEvent: () => undefined, maxSteps: 2 });
     expect(requests).toHaveLength(3);
     expect((requests[2] as any).tool_choice).toEqual({ type: 'none' });
     expect(JSON.stringify(requests[2].messages.slice(-1))).toContain('Tool budget');
@@ -227,7 +227,7 @@ describe('agent loop', () => {
     ]);
     await runAgent({
       call,
-      tools: buildToolset('investigate', () => undefined),
+      tools: buildToolset('investigate'),
       system: 's',
       messages: [{ role: 'user', content: 'q' }],
       ctx: ctxWith(fakeHttp(() => ({})), { recordFinding: (f) => found.push(f) }),

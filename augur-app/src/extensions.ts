@@ -51,3 +51,15 @@ export function alertContextText(ctx: any): string {
   ].filter(Boolean);
   return parts.length ? parts.join('\n') : JSON.stringify(ctx).slice(0, 800);
 }
+
+/** Summary of the Explore pane the user invoked Augur from. */
+export function exploreContextText(ctx: any): string {
+  if (!ctx) {
+    return '';
+  }
+  const targets = (ctx.targets ?? [])
+    .map((t: any) => `  ${t.refId}: ${t.expr ?? t.query ?? ''}${t.datasource?.uid ? ` (datasource ${t.datasource.uid})` : ''}`)
+    .join('\n');
+  const range = ctx.timeRange ? `Time range: ${String(ctx.timeRange.from?.toISOString?.() ?? ctx.timeRange.raw?.from ?? '')} → ${String(ctx.timeRange.to?.toISOString?.() ?? ctx.timeRange.raw?.to ?? '')}` : '';
+  return ['Explore', range, targets ? `Queries:\n${targets}` : ''].filter(Boolean).join('\n');
+}

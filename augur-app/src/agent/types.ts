@@ -72,7 +72,8 @@ export type ModelCaller = (req: MessagesRequest, signal: AbortSignal) => Promise
 /** Thin HTTP abstraction over Grafana's backendSrv so tools are testable. */
 export interface GrafanaHttp {
   get<T = unknown>(url: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T>;
-  post<T = unknown>(url: string, body: unknown, signal?: AbortSignal): Promise<T>;
+  post<T = unknown>(url: string, body: unknown, signal?: AbortSignal, headers?: Record<string, string>): Promise<T>;
+  put?<T = unknown>(url: string, body: unknown, signal?: AbortSignal): Promise<T>;
 }
 
 export interface DataSourceInfo {
@@ -87,6 +88,21 @@ export interface TimeRangeMs {
   to: number;
 }
 
+export interface ApprovalRequest {
+  title: string;
+  detail: string;
+}
+
+export interface Hypothesis {
+  id: string;
+  statement: string;
+  status: 'open' | 'supported' | 'refuted' | 'confirmed';
+  confidence: number;
+  evidence?: string;
+  challenged?: boolean;
+  updatedAt: number;
+}
+
 export interface ToolContext {
   http: GrafanaHttp;
   listDataSources: () => DataSourceInfo[];
@@ -96,6 +112,14 @@ export interface ToolContext {
   signal: AbortSignal;
   /** Investigation findings sink. */
   recordFinding?: (f: Finding) => void;
+  /** Hypothesis board sink. */
+  updateHypothesis?: (h: Hypothesis) => void;
+  /** Hand a write action to the UI for explicit user approval. */
+  propose?: (p: import('./proposals').Proposal) => void;
+  /** Ask the user to approve a potentially side-effecting tool call (e.g. MCP). */
+  confirm?: (r: ApprovalRequest) => Promise<boolean>;
+  /** Name of the sub-agent running this tool, if any. */
+  agent?: string;
 }
 
 export interface Finding {
@@ -118,8 +142,8 @@ export type AgentMode = 'chat' | 'investigate';
 
 export type AgentEvent =
   | { kind: 'assistant_text'; text: string }
-  | { kind: 'tool_start'; id: string; name: string; label: string; input: Record<string, unknown> }
-  | { kind: 'tool_end'; id: string; name: string; ok: boolean; output: string; ms: number }
+  | { kind: 'tool_start'; id: string; name: string; label: string; input: Record<string, unknown>; agent?: string }
+  | { kind: 'tool_end'; id: string; name: string; ok: boolean; output: string; ms: number; agent?: string }
   | { kind: 'finding'; finding: Finding }
   | { kind: 'usage'; usage: Usage }
   | { kind: 'status'; text: string }

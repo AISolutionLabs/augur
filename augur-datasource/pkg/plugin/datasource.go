@@ -37,6 +37,7 @@ const (
 type Datasource struct {
 	settings *models.PluginSettings
 	client   *http.Client
+	mcp      *mcpClient
 	resource backend.CallResourceHandler
 	logger   log.Logger
 }
@@ -63,10 +64,13 @@ func NewDatasource(ctx context.Context, instance backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("http client: %w", cErr)
 	}
 	ds.client = client
+	ds.mcp = newMCPClient(client)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/messages", ds.handleMessages)
 	mux.HandleFunc("/config", ds.handleConfig)
+	mux.HandleFunc("/mcp/tools", ds.handleMCPTools)
+	mux.HandleFunc("/mcp/call", ds.handleMCPCall)
 	ds.resource = httpadapter.New(mux)
 	return ds, nil
 }
@@ -305,6 +309,7 @@ type publicConfig struct {
 	Models       []string `json:"models"`
 	MaxTokens    int      `json:"maxTokens"`
 	AuthMethod   string   `json:"authMethod"`
+	MCPServers   []string `json:"mcpServers"`
 }
 
 // handleConfig exposes the non-secret settings the chat UI needs.
@@ -314,11 +319,16 @@ func (d *Datasource) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	names := []string{}
+	for _, m := range d.settings.MCPServers {
+		names = append(names, m.Name)
+	}
 	_ = json.NewEncoder(w).Encode(publicConfig{
 		DefaultModel: d.settings.DefaultModel,
 		Models:       d.settings.Models(),
 		MaxTokens:    d.settings.MaxTokens,
 		AuthMethod:   d.settings.AuthMethod,
+		MCPServers:   names,
 	})
 }
 

@@ -22,8 +22,22 @@ export interface ClaudeDataSourceOptions extends DataSourceJsonData {
   maxTokens?: number;
   timeoutSeconds?: number;
   extraHeaders?: Record<string, string>;
+  mcpServers?: McpServerConfig[];
+}
+
+export type McpAuth = 'none' | 'bearer' | 'header' | 'oauth';
+
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  auth: McpAuth;
+  headerName?: string;
+  requireApproval?: boolean;
+  allowedTools?: string[];
 }
 
 export interface ClaudeSecureJsonData {
   apiKey?: string;
+  /** mcpToken_<server name> */
+  [key: string]: string | undefined;
 }

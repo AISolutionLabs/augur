@@ -27,6 +27,11 @@ export interface RunOptions {
   /** Approximate character budget for the request before old tool results are elided. */
   contextCharBudget?: number;
   toolConcurrency?: number;
+  /**
+   * Called when the model wants to stop. Returning text sends it as a user nudge and continues the
+   * loop once (used as the investigation "conclusion gate").
+   */
+  beforeFinish?: () => string | undefined;
 }
 
 /** Runs the tool-use loop until the model stops calling tools. Returns the updated conversation. */
@@ -37,6 +42,7 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
   const toolSchemas = tools.map((t) => t.schema);
   let steps = 0;
   let finalCall = false;
+  let gated = false;
 
   while (true) {
     if (ctx.signal.aborted) {
@@ -79,6 +85,15 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
     if (resp.stop_reason === 'pause_turn') {
       continue;
     }
+    if (!toolUses.length && !finalCall && !gated && opts.beforeFinish && resp.stop_reason === 'end_turn') {
+      gated = true;
+      const nudge = opts.beforeFinish();
+      if (nudge) {
+        onEvent({ kind: 'status', text: 'Challenging the leading hypothesis before concluding…' });
+        messages.push({ role: 'user', content: [{ type: 'text', text: nudge }] });
+        continue;
+      }
+    }
     if (!toolUses.length || finalCall) {
       onEvent({ kind: 'done', stopReason: String(resp.stop_reason ?? 'end_turn'), steps });
       return messages;
@@ -112,7 +127,7 @@ async function runTools(
       const u = uses[i];
       const tool = byName.get(u.name);
       const label = tool?.describe?.(u.input as any) ?? u.name;
-      onEvent({ kind: 'tool_start', id: u.id, name: u.name, label, input: u.input });
+      onEvent({ kind: 'tool_start', id: u.id, name: u.name, label, input: u.input, agent: ctx.agent });
       const t0 = Date.now();
       let output: string;
       let ok = true;
@@ -125,7 +140,7 @@ async function runTools(
         ok = false;
         output = `Error: ${errorMessage(e)}`;
       }
-      onEvent({ kind: 'tool_end', id: u.id, name: u.name, ok, output, ms: Date.now() - t0 });
+      onEvent({ kind: 'tool_end', id: u.id, name: u.name, ok, output, ms: Date.now() - t0, agent: ctx.agent });
       results[i] = { type: 'tool_result', tool_use_id: u.id, content: output, ...(ok ? {} : { is_error: true }) };
     }
   };

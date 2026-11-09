@@ -28,8 +28,8 @@ function toPromise<T>(obs: Observable<{ data: T }>, signal?: AbortSignal): Promi
 export const grafanaHttp: GrafanaHttp = {
   get: (url, params, signal) =>
     toPromise(getBackendSrv().fetch({ url, method: 'GET', params: clean(params), showErrorAlert: false, showSuccessAlert: false }), signal),
-  post: (url, body, signal) =>
-    toPromise(getBackendSrv().fetch({ url, method: 'POST', data: body, showErrorAlert: false, showSuccessAlert: false }), signal),
+  post: (url, body, signal, headers) =>
+    toPromise(getBackendSrv().fetch({ url, method: 'POST', data: body, headers, showErrorAlert: false, showSuccessAlert: false }), signal),
 };
 
 function clean(params?: Record<string, unknown>) {
@@ -62,6 +62,7 @@ export interface ClaudeDsConfig {
   models: string[];
   maxTokens: number;
   authMethod: string;
+  mcpServers?: string[];
 }
 
 export function getClaudeConfig(uid: string): Promise<ClaudeDsConfig> {

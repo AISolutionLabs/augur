@@ -4,3 +4,22 @@ apps:
   - type: augur-assistant-app
     org_id: 1
     disabled: false
+    jsonData:
+      investigationFolderUid: ''
+      enableSubAgents: true
+      rules:
+        - id: prod-ds
+          scope: all
+          enabled: true
+          text: Production metrics are in the "Mimir prod" datasource; the cluster label is k8s_cluster.
+      skills:
+        - name: kafka-lag
+          title: Kafka consumer lag
+          description: Use when consumer lag alerts fire or consumers fall behind
+          tags: [kafka]
+          enabled: true
+          body: |
+            1. Query kafka_consumergroup_lag by consumergroup and topic; find which group/partition grew first.
+            2. Compare consumer pod restarts and CPU throttling for that group.
+            3. Check broker-side under-replicated partitions and request latency.
+            4. Look for rebalances in consumer logs ("Revoking previously assigned partitions").

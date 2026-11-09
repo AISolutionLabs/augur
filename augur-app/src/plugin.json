@@ -53,7 +53,7 @@
     }
   ],
   "dependencies": {
-    "grafanaDependency": ">=13.0.0",
+    "grafanaDependency": ">=12.0.0",
     "plugins": [
       {
         "id": "augur-claude-datasource",
@@ -69,30 +69,46 @@
         "targets": [
           "grafana/dashboard/panel/menu"
         ],
-        "title": "Ask Claude about this panel",
+        "title": "Ask Augur about this panel",
         "description": "Explain what this panel shows and anything unusual"
       },
       {
         "targets": [
           "grafana/dashboard/panel/menu"
         ],
-        "title": "Investigate with Claude",
+        "title": "Investigate with Augur",
         "description": "Root-cause analysis across metrics, logs and traces starting from this panel"
+      },
+      {
+        "targets": [
+          "grafana/explore/toolbar/action"
+        ],
+        "title": "Ask Augur",
+        "description": "Explain, fix or improve these queries"
       },
       {
         "targets": [
           "grafana/alerting/alertingrule/action",
           "grafana/alerting/instance/action"
         ],
-        "title": "Investigate with Claude",
+        "title": "Investigate with Augur",
         "description": "Root-cause analysis for this alert"
       },
       {
         "targets": [
           "grafana/commandpalette/action"
         ],
-        "title": "Ask Claude",
-        "description": "Chat with Claude about your observability data"
+        "title": "Ask Augur",
+        "description": "Chat with Augur about your observability data"
+      }
+    ],
+    "addedComponents": [
+      {
+        "targets": [
+          "grafana/extension-sidebar/v0-alpha"
+        ],
+        "title": "Augur",
+        "description": "Ask Augur about what you are looking at"
       }
     ]
   }

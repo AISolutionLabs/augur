@@ -38,7 +38,7 @@ export const searchDashboards: ToolDefinition = {
     if (!hits?.length) {
       return 'No dashboards found.';
     }
-    return hits.map((h) => `${h.uid} | ${h.title} | folder: ${h.folderTitle ?? 'General'}${h.tags?.length ? ` | tags: ${h.tags.join(',')}` : ''}`).join('\n');
+    return hits.map((h) => `${h.uid} | ${h.title} | folder: ${h.folderTitle ?? 'General'}${h.tags?.length ? ` | tags: ${h.tags.join(',')}` : ''} | ${h.url ?? `/d/${h.uid}`}`).join('\n');
   },
 };
 
@@ -98,7 +98,7 @@ export const getDashboard: ToolDefinition = {
       ctx.signal
     );
     const d = resp.dashboard;
-    const lines = [`"${d.title}" (uid ${d.uid}) folder: ${resp.meta?.folderTitle ?? 'General'} tags: ${(d.tags ?? []).join(',')}`];
+    const lines = [`"${d.title}" (uid ${d.uid}, version ${(d as any).version ?? '?'}) folder: ${resp.meta?.folderTitle ?? 'General'} tags: ${(d.tags ?? []).join(',')} url: ${resp.meta?.url ?? `/d/${d.uid}`}`];
     if (d.description) {
       lines.push(`Description: ${d.description}`);
     }
@@ -252,7 +252,7 @@ export const listAlerts: ToolDefinition = {
         if (lines.length > 120) {
           continue;
         }
-        lines.push(`[${state}] ${r.name} (uid ${r.uid ?? '?'}) folder=${g.file} group=${g.name} health=${r.health}${r.lastError ? ` error="${r.lastError}"` : ''}`);
+        lines.push(`[${state}] ${r.name} (uid ${r.uid ?? '?'}) folder=${g.file} group=${g.name} health=${r.health}${r.lastError ? ` error="${r.lastError}"` : ''}${r.uid ? ` url=/alerting/grafana/${r.uid}/view` : ''}`);
         if (r.annotations?.summary) {
           lines.push(`   summary: ${String(r.annotations.summary).slice(0, 200)}`);
         }

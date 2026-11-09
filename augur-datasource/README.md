@@ -10,4 +10,6 @@ The backend for the [Augur](https://github.com/AISolutionLabs/augur) app. It pro
 
 *Save & test* checks connectivity and credentials against `/v1/models`. This datasource can't be queried from panels; use the Augur app.
 
-Requires Grafana 13.0+.
+**MCP servers:** proxies remote MCP servers (streamable HTTP) for the Augur app, with no auth, a stored bearer/header secret, or the user's forwarded OAuth token, plus per-server tool allow-lists.
+
+Requires Grafana 12.0+.

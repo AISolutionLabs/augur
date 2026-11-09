@@ -56,12 +56,40 @@ type PluginSettings struct {
 	// Optional extra static headers sent upstream (e.g. LiteLLM tags). Values are not secret.
 	ExtraHeaders map[string]string `json:"extraHeaders"`
 
+	// MCP servers whose tools Augur may use, proxied through this backend.
+	MCPServers []MCPServer `json:"mcpServers"`
+
 	Secrets *SecretPluginSettings `json:"-"`
 }
+
+// MCP server auth modes.
+const (
+	MCPAuthNone   = "none"   // no credentials
+	MCPAuthBearer = "bearer" // Authorization: Bearer <secureJsonData mcpToken_<name>>
+	MCPAuthHeader = "header" // <headerName>: <secureJsonData mcpToken_<name>>
+	MCPAuthOAuth  = "oauth"  // forward the signed-in user's OAuth token (requires oauthPassThru)
+)
+
+// MCPServer configures one remote MCP server (streamable HTTP transport).
+type MCPServer struct {
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Auth       string `json:"auth"`
+	HeaderName string `json:"headerName,omitempty"`
+	// RequireApproval: tools not annotated read-only need a user click before running. Default true.
+	RequireApproval *bool `json:"requireApproval,omitempty"`
+	// AllowedTools: optional glob patterns (path.Match) of tool names to expose. Empty = all.
+	AllowedTools []string `json:"allowedTools,omitempty"`
+}
+
+// NeedsApproval reports whether non-read-only tools require user approval.
+func (m MCPServer) NeedsApproval() bool { return m.RequireApproval == nil || *m.RequireApproval }
 
 // SecretPluginSettings is stored encrypted in secureJsonData.
 type SecretPluginSettings struct {
 	APIKey string
+	// MCPTokens maps server name -> secret (from secureJsonData key "mcpToken_<name>").
+	MCPTokens map[string]string
 }
 
 // LoadPluginSettings parses and validates instance settings, applying defaults.
@@ -73,7 +101,12 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		}
 	}
 	s.URL = strings.TrimRight(strings.TrimSpace(source.URL), "/")
-	s.Secrets = &SecretPluginSettings{APIKey: strings.TrimSpace(source.DecryptedSecureJSONData["apiKey"])}
+	s.Secrets = &SecretPluginSettings{APIKey: strings.TrimSpace(source.DecryptedSecureJSONData["apiKey"]), MCPTokens: map[string]string{}}
+	for k, v := range source.DecryptedSecureJSONData {
+		if strings.HasPrefix(k, "mcpToken_") {
+			s.Secrets.MCPTokens[strings.TrimPrefix(k, "mcpToken_")] = strings.TrimSpace(v)
+		}
+	}
 	s.applyDefaults()
 	return &s, s.Validate()
 }
@@ -142,6 +175,28 @@ func (s *PluginSettings) Validate() error {
 	case AuthMethodNone:
 	default:
 		return fmt.Errorf("unknown authMethod %q", s.AuthMethod)
+	}
+	seen := map[string]bool{}
+	for _, m := range s.MCPServers {
+		if m.Name == "" || seen[m.Name] {
+			return fmt.Errorf("MCP servers need unique, non-empty names")
+		}
+		seen[m.Name] = true
+		if u, err := url.Parse(m.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("MCP server %q: URL must be an absolute http(s) URL", m.Name)
+		}
+		switch m.Auth {
+		case "", MCPAuthNone, MCPAuthBearer, MCPAuthHeader:
+		case MCPAuthOAuth:
+			if !s.OAuthPassThru {
+				return fmt.Errorf("MCP server %q uses OAuth forwarding but 'Forward OAuth Identity' is off", m.Name)
+			}
+		default:
+			return fmt.Errorf("MCP server %q: unknown auth %q", m.Name, m.Auth)
+		}
+		if m.Auth == MCPAuthHeader && m.HeaderName == "" {
+			return fmt.Errorf("MCP server %q: headerName is required for header auth", m.Name)
+		}
 	}
 	for _, p := range []string{s.MessagesPath, s.ModelsPath} {
 		if !strings.HasPrefix(p, "/") {
