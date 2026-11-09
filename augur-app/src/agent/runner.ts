@@ -34,6 +34,8 @@ export interface RunOptions {
    * loop once (used as the investigation "conclusion gate").
    */
   beforeFinish?: () => string | undefined;
+  /** Optional nudge appended to a batch of tool results (e.g. investigation state reminders). */
+  afterTools?: (toolNames: string[]) => string | undefined;
 }
 
 /** Runs the tool-use loop until the model stops calling tools. Returns the updated conversation. */
@@ -112,6 +114,10 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
 
     const results = await runTools(toolUses, byName, ctx, onEvent, opts.toolConcurrency ?? 4);
     const userContent: ContentBlock[] = [...results];
+    const nudge = opts.afterTools?.(toolUses.map((u) => u.name));
+    if (nudge && steps < opts.maxSteps) {
+      userContent.push({ type: 'text', text: nudge });
+    }
     if (steps >= opts.maxSteps) {
       finalCall = true;
       userContent.push({

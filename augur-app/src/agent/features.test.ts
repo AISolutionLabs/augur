@@ -297,3 +297,54 @@ describe('links and page context', () => {
     expect(p).toContain('Dashboard uid abc');
   });
 });
+
+describe('prompt review follow-ups', () => {
+  it('reminds the investigator to update the board after several silent rounds, once per gap', async () => {
+    const { stateReminder, STATE_REMINDER_AFTER } = await import('./prompts');
+    const r = stateReminder();
+    const outs = Array.from({ length: STATE_REMINDER_AFTER }, () => r(['query_prometheus']));
+    expect(outs.slice(0, -1).every((x) => x === undefined)).toBe(true);
+    expect(outs[outs.length - 1]).toMatch(/record_finding/);
+    expect(r(['query_loki'])).toBeUndefined(); // counter reset after a reminder
+    expect(r(['delegate'])).toBeUndefined(); // waiting on sub-agents is not "silent"
+    r(['a']);
+    r(['b']);
+    expect(r(['update_hypothesis', 'query_loki'])).toBeUndefined(); // state update resets
+  });
+
+  it('runner appends the reminder to the tool-result turn', async () => {
+    const { runAgent } = await import('./runner');
+    const requests: any[] = [];
+    const responses: any[] = [
+      { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'a', name: 'list_datasources', input: {} }] },
+      { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] },
+    ];
+    await runAgent({
+      call: async (req) => {
+        requests.push(JSON.parse(JSON.stringify(req)));
+        return { id: 'm', type: 'message', role: 'assistant', model: 'x', ...responses.shift() };
+      },
+      tools: readOnlyTools({}),
+      system: 's',
+      messages: [{ role: 'user', content: 'q' }],
+      ctx: ctxWith(fakeHttp(() => ({}))),
+      onEvent: () => undefined,
+      maxSteps: 5,
+      afterTools: () => 'REMEMBER',
+    });
+    const last = requests[1].messages[2].content;
+    expect(last[last.length - 1]).toMatchObject({ type: 'text', text: 'REMEMBER' });
+  });
+
+  it('prompt carries timezone with local time and the code-formatting rule', async () => {
+    const { buildSystemPrompt, localTime, resolveTimezone } = await import('./prompts');
+    const p = buildSystemPrompt({ mode: 'investigate', now: NOW, range: { from: NOW - 1, to: NOW }, datasources: DATASOURCES, timezone: 'Asia/Kolkata' });
+    expect(p).toContain("User's timezone: Asia/Kolkata (17:30 UTC+5:30 local now)");
+    expect(p).toContain('__name__ becomes bold');
+    expect(p).toContain('call record_finding and/or update_hypothesis before continuing');
+    expect(localTime(NOW, 'Not/AZone')).toBe('Not/AZone');
+    expect(resolveTimezone('utc')).toBe('UTC');
+    expect(resolveTimezone('Europe/London')).toBe('Europe/London');
+    expect(resolveTimezone('browser')).toBeTruthy();
+  });
+});

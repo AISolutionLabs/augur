@@ -10,7 +10,7 @@ import { config } from '@grafana/runtime';
 
 import { AgentEvent, AgentMode, ContentBlock, Finding, Hypothesis, Message, ToolUseBlock, Usage } from '../agent/types';
 import { runAgent } from '../agent/runner';
-import { buildSystemPrompt, conclusionGate } from '../agent/prompts';
+import { buildSystemPrompt, conclusionGate, resolveTimezone, stateReminder } from '../agent/prompts';
 import { buildToolset } from '../agent/tools';
 import { loadMcpCatalog, McpCatalog, mcpTools } from '../agent/tools/mcp';
 import { Proposal } from '../agent/proposals';
@@ -365,6 +365,7 @@ class AugurStore {
       memorySummary: settings.memory?.summary,
       pageContext,
       mcpServers: mcp.servers.filter((s) => s.tools?.length).map((s) => s.name),
+      timezone: resolveTimezone(user?.timezone),
     };
     const system = buildSystemPrompt({ ...promptBase, mode, subAgents });
     const propose = (p: Proposal) =>
@@ -391,6 +392,7 @@ class AugurStore {
         // Checkpoint: the transcript is persisted after every model response and tool batch.
         onProgress: (msgs) => this.updateSession((s) => ({ ...s, messages: [...msgs] }), true),
         beforeFinish: mode === 'investigate' ? () => conclusionGate(this.hypotheses) : undefined,
+        afterTools: mode === 'investigate' ? stateReminder() : undefined,
         ctx: {
           http: grafanaHttp,
           listDataSources: () => datasources,

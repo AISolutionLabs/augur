@@ -118,6 +118,7 @@ sequenceDiagram
 ```
 
 - **One lead agent orchestrates through tool calls.** `delegate` starts up to four specialist sub-agents at once. Each runs the same agent loop with its own fresh context, a read-only toolset (it can't propose changes or delegate further), a 12-step budget, and a smaller context budget. Each returns a brief capped at about 6k characters, so the lead's context stays focused and the specialists can dig deep. Their tool calls appear live in the timeline, labelled `[metrics]`, `[logs]` and so on.
+- **The board stays current.** After four rounds of queries with no new finding or hypothesis update, Augur is reminded to record what it has learned, so the board you watch, and what survives an interruption, stays up to date.
 - **Hypotheses are explicit state.** Every candidate cause is tracked with a status (open, supported, refuted, confirmed), a confidence and its evidence. When the lead tries to finish, a **conclusion gate** sends it back once to falsify its leading hypothesis unless it has already done so.
 - **Everything is grounded:** every claim in the report links to the query behind it.
 
