@@ -212,6 +212,17 @@ make install && make lint && make test && make package
 
 The agent is UI-independent: tools take a `ToolContext` with an HTTP abstraction and are unit-tested against a fake Grafana API. `ChatPage.test.tsx` drives the whole UI with a scripted model (investigations, proposals, MCP approvals, history, sidebar). The Go tests cover both auth modes, the guardrails and an MCP server over JSON and SSE.
 
+### Releasing
+
+Releases are built and published by GitHub Actions ([`release.yml`](.github/workflows/release.yml)):
+
+- **One click:** *Actions → Release → Run workflow*, enter a version (e.g. `1.2.0`, or `1.2.0-rc.1` for a pre-release). The workflow bumps both plugins, commits, tags `v1.2.0` and releases.
+- **Or tag it yourself:** `git tag v1.2.0 && git push origin v1.2.0`.
+
+Each release runs lint, tests, the Grafana 12.0 compatibility check and the full build (Go backends for Linux, macOS and Windows). It optionally signs the plugins, checks the archive layout, runs Grafana's plugin validator (advisory), and publishes both zips plus `SHA256SUMS` to GitHub Releases, with notes from the CHANGELOGs and build-provenance attestations (`gh attestation verify <zip> --repo AISolutionLabs/augur`). Add a `## <version>` section to both CHANGELOGs before releasing.
+
+To sign, add the repository secret `GRAFANA_ACCESS_POLICY_TOKEN`. For a private signature, also add the variable `GRAFANA_SIGN_ROOT_URLS` (e.g. `https://grafana.example.com`). Without the secret, unsigned builds are published.
+
 **Signing:** `npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` (private signing). Community signing requires the ID prefix (`augur-`) to match your grafana.com org slug.
 
 **Roadmap:** scheduled automations and alert-triggered investigations (server-side runner), Slack, dashboard v2 schema editing, streaming responses.

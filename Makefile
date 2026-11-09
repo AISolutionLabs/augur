@@ -2,7 +2,7 @@ APP := augur-app
 DS  := augur-datasource
 VERSION ?= $(shell node -p "require('./$(APP)/package.json').version")
 
-.PHONY: install test lint compat build build-frontend build-backend package clean
+.PHONY: install test lint compat build build-frontend build-backend package zip version clean
 
 install:
 	cd $(APP) && npm ci
@@ -31,9 +31,11 @@ build-backend:
 build: build-frontend build-backend
 
 # Zips in the layout Grafana expects: <plugin-id>/... at the archive root.
-package: build
-	rm -rf release && mkdir -p release
-	rm -rf release/tmp && mkdir -p release/tmp
+package: build zip
+
+# Zips whatever is already in */dist (used by CI after signing).
+zip:
+	rm -rf release && mkdir -p release/tmp
 	cp -r $(APP)/dist release/tmp/augur-assistant-app
 	cp -r $(DS)/dist release/tmp/augur-claude-datasource
 	find release/tmp -name '*.map' -delete
@@ -41,6 +43,10 @@ package: build
 	cd release/tmp && zip -qr ../augur-claude-datasource-$(VERSION).zip augur-claude-datasource
 	rm -rf release/tmp
 	cd release && sha256sum *.zip > SHA256SUMS
+
+# Sets both plugins to VERSION (e.g. make version VERSION=1.2.0).
+version:
+	scripts/set-version.sh $(VERSION)
 
 clean:
 	rm -rf $(APP)/dist $(DS)/dist release
