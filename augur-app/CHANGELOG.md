@@ -4,6 +4,7 @@
 
 - Durable runs: the agent runs outside React, so investigations survive closing the sidebar and navigating Grafana; transcript checkpointed after every step with **Resume** after reload or crash; transient gateway errors retried with backoff; leave-page confirmation while running.
 - Context management: token-based budget with tiered compaction, automatic recovery from "prompt too long", near-duplicate log lines collapsed into counted groups.
+- Fix: abort listeners are removed when requests, backoff sleeps and approval prompts settle (no accumulation on long investigations); retry backoff has ±50% jitter so parallel sub-agents don't retry in lockstep; MCP discovery errors and warnings shown in the chat.
 - Fix: single-sample summaries (instant queries, alert-rule previews) failed on multi-point series.
 - UI: finding rows no longer duplicated by their tool rows; clearer silence duration.
 - README: screenshots/GIF of the real UI, quick start, investigation architecture, context management, durability and model support.

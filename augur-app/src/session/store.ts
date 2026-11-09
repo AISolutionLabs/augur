@@ -406,9 +406,13 @@ class AugurStore {
           confirm: (r) =>
             new Promise<boolean>((resolve) => {
               const id = `a-${Math.random().toString(36).slice(2, 9)}`;
-              this.approvals.set(id, resolve);
+              const onAbort = () => resolve(false);
+              this.approvals.set(id, (ok) => {
+                ac.signal.removeEventListener('abort', onAbort);
+                resolve(ok);
+              });
               this.pushItem({ kind: 'approval', id, title: r.title, detail: r.detail, state: 'pending' });
-              ac.signal.addEventListener('abort', () => resolve(false), { once: true });
+              ac.signal.addEventListener('abort', onAbort, { once: true });
             }),
         },
       });

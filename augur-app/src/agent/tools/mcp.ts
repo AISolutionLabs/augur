@@ -12,7 +12,7 @@ export interface McpToolInfo {
 }
 
 export interface McpCatalog {
-  servers: Array<{ name: string; tools: McpToolInfo[]; error?: string; requireApproval?: boolean }>;
+  servers: Array<{ name: string; tools: McpToolInfo[]; error?: string; warning?: string; requireApproval?: boolean }>;
 }
 
 export async function loadMcpCatalog(http: GrafanaHttp, dsUid: string): Promise<McpCatalog> {

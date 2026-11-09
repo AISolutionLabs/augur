@@ -28,27 +28,113 @@ const (
 	mcpProtocolVersion = "2025-06-18"
 	mcpSessionTTL      = 10 * time.Minute
 	mcpToolsTTL        = 5 * time.Minute
+	mcpErrorTTL        = 30 * time.Second // failed discovery is cached briefly so a down server isn't hammered
 	mcpCallTimeout     = 120 * time.Second
 	mcpMaxBody         = 8 << 20
+	mcpMaxToolPages    = 50  // tools/list pages followed per server
+	mcpMaxTools        = 512 // tools exposed per server (each costs prompt tokens on every model call)
+	mcpSweepInterval   = time.Minute
+	mcpSharedWorkLimit = 30 * time.Second // deadline for work shared by concurrent callers (init, discovery)
 )
 
 type mcpSession struct {
-	id       string
-	expires  time.Time
-	toolsAt  time.Time
-	tools    []json.RawMessage
-	toolsErr error
+	id      string
+	expires time.Time
+}
+
+type toolsEntry struct {
+	tools   []json.RawMessage
+	warning string
+	err     error
+	at      time.Time
 }
 
 type mcpClient struct {
-	http     *http.Client
-	mu       sync.Mutex
-	sessions map[string]*mcpSession
-	nextID   atomic.Int64
+	http      *http.Client
+	maxBody   int64
+	mu        sync.Mutex
+	sessions  map[string]*mcpSession
+	tools     map[string]*toolsEntry
+	lastSweep time.Time
+	flight    flightGroup
+	nextID    atomic.Int64
 }
 
 func newMCPClient(h *http.Client) *mcpClient {
-	return &mcpClient{http: h, sessions: map[string]*mcpSession{}}
+	return &mcpClient{http: h, maxBody: mcpMaxBody, sessions: map[string]*mcpSession{}, tools: map[string]*toolsEntry{}}
+}
+
+// flightGroup collapses concurrent calls for the same key into one (a minimal singleflight, kept
+// local to avoid adding a dependency to the plugin's module graph).
+type flightGroup struct {
+	mu    sync.Mutex
+	calls map[string]*flightCall
+}
+
+type flightCall struct {
+	done chan struct{}
+	val  any
+	err  error
+}
+
+func (g *flightGroup) do(key string, fn func() (any, error)) (any, error) {
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = map[string]*flightCall{}
+	}
+	if c, ok := g.calls[key]; ok {
+		g.mu.Unlock()
+		<-c.done
+		return c.val, c.err
+	}
+	c := &flightCall{done: make(chan struct{})}
+	g.calls[key] = c
+	g.mu.Unlock()
+
+	c.val, c.err = fn()
+	g.mu.Lock()
+	delete(g.calls, key)
+	g.mu.Unlock()
+	close(c.done)
+	return c.val, c.err
+}
+
+// sharedContext detaches shared work from the first caller's cancellation (one user closing a tab
+// must not fail everyone waiting on the same initialize/discovery) while keeping a deadline.
+func sharedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), mcpSharedWorkLimit)
+}
+
+// errResponseTooLarge is returned when an MCP response exceeds the body limit, instead of a
+// truncated-JSON or "stream ended" error that would hide the cause.
+type errResponseTooLarge struct{ limit int64 }
+
+func (e errResponseTooLarge) Error() string {
+	return fmt.Sprintf("MCP response exceeds the %d MiB limit; narrow the tool arguments (fewer results, smaller range)", e.limit>>20)
+}
+
+// capReader passes through at most limit bytes and fails loudly if the body is longer.
+type capReader struct {
+	r         io.Reader
+	remaining int64
+	limit     int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		var probe [1]byte
+		n, err := c.r.Read(probe[:])
+		if n > 0 {
+			return 0, errResponseTooLarge{c.limit}
+		}
+		return 0, err
+	}
+	if int64(len(p)) > c.remaining {
+		p = p[:c.remaining]
+	}
+	n, err := c.r.Read(p)
+	c.remaining -= int64(n)
+	return n, err
 }
 
 type rpcError struct {
@@ -120,9 +206,9 @@ func (c *mcpClient) post(ctx context.Context, srv models.MCPServer, auth http.He
 		return nil, newSession, nil
 	}
 	wantID, _ := json.Marshal(id)
-	limited := io.LimitReader(resp.Body, mcpMaxBody)
+	limited := &capReader{r: resp.Body, remaining: c.maxBody, limit: c.maxBody}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		r, err := readSSEResponse(limited, wantID)
+		r, err := readSSEResponse(limited, wantID, c.maxBody)
 		return r, newSession, err
 	}
 	raw, err := io.ReadAll(limited)
@@ -155,9 +241,11 @@ func matchResponse(raw []byte, wantID []byte) (*rpcResponse, error) {
 }
 
 // readSSEResponse scans server-sent events until the JSON-RPC response with wantID arrives.
-func readSSEResponse(r io.Reader, wantID []byte) (*rpcResponse, error) {
+func readSSEResponse(r io.Reader, wantID []byte, maxBody int64) (*rpcResponse, error) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), mcpMaxBody)
+	// A single data: line may be as large as the whole body limit; beyond that the scanner stops with
+	// ErrTooLong, which is reported as errResponseTooLarge below (never a panic or silent truncation).
+	sc.Buffer(make([]byte, 64*1024), int(maxBody)+1)
 	var data strings.Builder
 	flush := func() (*rpcResponse, bool) {
 		defer data.Reset()
@@ -192,48 +280,92 @@ func readSSEResponse(r io.Reader, wantID []byte) (*rpcResponse, error) {
 		return r, nil
 	}
 	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return nil, errResponseTooLarge{maxBody}
+		}
 		return nil, err
 	}
 	return nil, errors.New("MCP stream ended without a response")
 }
 
+func (c *mcpClient) cachedSession(key string) *mcpSession {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.sessions[key]; s != nil && time.Now().Before(s.expires) {
+		return s
+	}
+	return nil
+}
+
+// session returns a live session for this server and caller identity, initializing at most once
+// even when many requests arrive together.
 func (c *mcpClient) session(ctx context.Context, srv models.MCPServer, auth http.Header) (*mcpSession, error) {
 	key := identityKey(srv.Name, auth)
-	c.mu.Lock()
-	s := c.sessions[key]
-	c.mu.Unlock()
-	if s != nil && time.Now().Before(s.expires) {
+	if s := c.cachedSession(key); s != nil {
 		return s, nil
 	}
-	init := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      c.nextID.Add(1),
-		"method":  "initialize",
-		"params": map[string]any{
-			"protocolVersion": mcpProtocolVersion,
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "augur-grafana", "version": "1.1.0"},
-		},
-	}
-	resp, sid, err := c.post(ctx, srv, auth, "", init)
+	v, err := c.flight.do("init:"+key, func() (any, error) {
+		if s := c.cachedSession(key); s != nil {
+			return s, nil
+		}
+		sctx, cancel := sharedContext(ctx)
+		defer cancel()
+		init := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      c.nextID.Add(1),
+			"method":  "initialize",
+			"params": map[string]any{
+				"protocolVersion": mcpProtocolVersion,
+				"capabilities":    map[string]any{},
+				"clientInfo":      map[string]any{"name": "augur-grafana", "version": "1.2.0"},
+			},
+		}
+		resp, sid, err := c.post(sctx, srv, auth, "", init)
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || resp.Error != nil {
+			msg := "no response"
+			if resp != nil && resp.Error != nil {
+				msg = resp.Error.Message
+			}
+			return nil, fmt.Errorf("MCP server %q initialize failed: %s", srv.Name, msg)
+		}
+		if _, _, err := c.post(sctx, srv, auth, sid, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}); err != nil {
+			return nil, err
+		}
+		s := &mcpSession{id: sid, expires: time.Now().Add(mcpSessionTTL)}
+		c.mu.Lock()
+		c.sweepLocked()
+		c.sessions[key] = s
+		c.mu.Unlock()
+		return s, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if resp == nil || resp.Error != nil {
-		msg := "no response"
-		if resp != nil && resp.Error != nil {
-			msg = resp.Error.Message
+	return v.(*mcpSession), nil
+}
+
+// sweepLocked evicts expired sessions and tool caches. Forwarded OAuth tokens rotate, and each new
+// token is a new identity, so without eviction the maps would grow for the life of the plugin.
+// The caller holds c.mu.
+func (c *mcpClient) sweepLocked() {
+	now := time.Now()
+	if now.Sub(c.lastSweep) < mcpSweepInterval {
+		return
+	}
+	c.lastSweep = now
+	for k, s := range c.sessions {
+		if now.After(s.expires) {
+			delete(c.sessions, k)
 		}
-		return nil, fmt.Errorf("MCP server %q initialize failed: %s", srv.Name, msg)
 	}
-	if _, _, err := c.post(ctx, srv, auth, sid, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}); err != nil {
-		return nil, err
+	for k, t := range c.tools {
+		if now.Sub(t.at) > mcpToolsTTL {
+			delete(c.tools, k)
+		}
 	}
-	s = &mcpSession{id: sid, expires: time.Now().Add(mcpSessionTTL)}
-	c.mu.Lock()
-	c.sessions[key] = s
-	c.mu.Unlock()
-	return s, nil
 }
 
 func (c *mcpClient) drop(srv models.MCPServer, auth http.Header) {
@@ -280,55 +412,94 @@ func toolAllowed(srv models.MCPServer, name string) bool {
 	return false
 }
 
-// listTools returns the server's tools (all pages, filtered by AllowedTools), cached per identity.
-func (c *mcpClient) listTools(ctx context.Context, srv models.MCPServer, auth http.Header) ([]json.RawMessage, error) {
-	s, err := c.session(ctx, srv, auth)
-	if err != nil {
-		return nil, err
+// listTools returns the server's tools (all pages, filtered by AllowedTools) plus a warning when the
+// list was capped. Results are cached per identity (failures briefly), and concurrent requests for
+// the same identity share one discovery.
+func (c *mcpClient) listTools(ctx context.Context, srv models.MCPServer, auth http.Header) ([]json.RawMessage, string, error) {
+	key := identityKey(srv.Name, auth)
+	if e := c.cachedTools(key); e != nil {
+		return e.tools, e.warning, e.err
 	}
-	c.mu.Lock()
-	if time.Since(s.toolsAt) < mcpToolsTTL && (s.tools != nil || s.toolsErr != nil) {
-		t, e := s.tools, s.toolsErr
+	v, _ := c.flight.do("tools:"+key, func() (any, error) {
+		if e := c.cachedTools(key); e != nil {
+			return e, nil
+		}
+		sctx, cancel := sharedContext(ctx)
+		defer cancel()
+		tools, warning, err := c.fetchTools(sctx, srv, auth)
+		e := &toolsEntry{tools: tools, warning: warning, err: err, at: time.Now()}
+		c.mu.Lock()
+		c.sweepLocked()
+		c.tools[key] = e
 		c.mu.Unlock()
-		return t, e
+		return e, nil
+	})
+	e := v.(*toolsEntry)
+	return e.tools, e.warning, e.err
+}
+
+func (c *mcpClient) cachedTools(key string) *toolsEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.tools[key]
+	if e == nil {
+		return nil
 	}
-	c.mu.Unlock()
+	ttl := mcpToolsTTL
+	if e.err != nil {
+		ttl = mcpErrorTTL
+	}
+	if time.Since(e.at) > ttl {
+		return nil
+	}
+	return e
+}
+
+func (c *mcpClient) fetchTools(ctx context.Context, srv models.MCPServer, auth http.Header) ([]json.RawMessage, string, error) {
 	var out []json.RawMessage
+	seen := map[string]bool{}
 	cursor := ""
-	for page := 0; page < 10; page++ {
+	for page := 0; ; page++ {
+		if page == mcpMaxToolPages {
+			return out, fmt.Sprintf("tool list truncated after %d pages (%d tools); narrow allowedTools for this server", mcpMaxToolPages, len(out)), nil
+		}
 		params := map[string]any{}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
 		raw, err := c.call(ctx, srv, auth, "tools/list", params)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		var res struct {
 			Tools      []json.RawMessage `json:"tools"`
 			NextCursor string            `json:"nextCursor"`
 		}
 		if err := json.Unmarshal(raw, &res); err != nil {
-			return nil, fmt.Errorf("MCP server %q: invalid tools/list result", srv.Name)
+			return nil, "", fmt.Errorf("MCP server %q: invalid tools/list result", srv.Name)
 		}
 		for _, t := range res.Tools {
 			var meta struct {
 				Name string `json:"name"`
 			}
 			_ = json.Unmarshal(t, &meta)
-			if meta.Name != "" && toolAllowed(srv, meta.Name) {
-				out = append(out, t)
+			if meta.Name == "" || seen[meta.Name] || !toolAllowed(srv, meta.Name) {
+				continue
 			}
+			if len(out) == mcpMaxTools {
+				return out, fmt.Sprintf("only the first %d tools are exposed; narrow allowedTools for this server", mcpMaxTools), nil
+			}
+			seen[meta.Name] = true
+			out = append(out, t)
 		}
 		if res.NextCursor == "" {
-			break
+			return out, "", nil
+		}
+		if res.NextCursor == cursor {
+			return out, "server returned the same pagination cursor twice; tool list may be incomplete", nil
 		}
 		cursor = res.NextCursor
 	}
-	c.mu.Lock()
-	s.tools, s.toolsErr, s.toolsAt = out, nil, time.Now()
-	c.mu.Unlock()
-	return out, nil
 }
 
 // ---- resource handlers -------------------------------------------------------
@@ -370,6 +541,7 @@ type mcpServerTools struct {
 	Name            string            `json:"name"`
 	Tools           []json.RawMessage `json:"tools"`
 	Error           string            `json:"error,omitempty"`
+	Warning         string            `json:"warning,omitempty"`
 	RequireApproval bool              `json:"requireApproval"`
 }
 
@@ -393,9 +565,12 @@ func (d *Datasource) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 				ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 				defer cancel()
 				var tools []json.RawMessage
-				tools, err = d.mcp.listTools(ctx, srv, auth)
+				tools, entry.Warning, err = d.mcp.listTools(ctx, srv, auth)
 				if tools != nil {
 					entry.Tools = tools
+				}
+				if entry.Warning != "" {
+					d.logger.Warn("MCP tool list capped", "server", srv.Name, "warning", entry.Warning)
 				}
 			}
 			if err != nil {

@@ -201,6 +201,13 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
             {s.configError}
           </Alert>
         )}
+        {s.mcp.servers
+          .filter((m) => m.error || m.warning)
+          .map((m) => (
+            <div key={m.name} className={st.notice} data-testid="augur-mcp-notice">
+              <Icon name={m.error ? 'exclamation-triangle' : 'info-circle'} /> MCP server <b>{m.name}</b>: {m.error ?? m.warning}
+            </div>
+          ))}
         {s.interrupted && (
           <Alert
             severity="warning"
