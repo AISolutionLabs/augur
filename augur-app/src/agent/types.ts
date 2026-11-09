@@ -136,6 +136,8 @@ export interface ToolDefinition {
   run: (input: Record<string, any>, ctx: ToolContext) => Promise<string>;
   /** Short human label for the progress timeline. */
   describe?: (input: Record<string, any>) => string;
+  /** True when the tool cannot change anything (safe for sub-agents without user approval). */
+  readOnly?: boolean;
 }
 
 export type AgentMode = 'chat' | 'investigate';

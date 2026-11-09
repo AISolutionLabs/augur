@@ -348,3 +348,51 @@ describe('prompt review follow-ups', () => {
     expect(resolveTimezone('browser')).toBeTruthy();
   });
 });
+
+describe('toolset review follow-ups', () => {
+  it('MCP tool names stay unique after sanitising and truncation', async () => {
+    const { mcpToolName, mcpTools } = await import('./tools/mcp');
+    const taken = new Set<string>();
+    const a = mcpToolName('gh', 'get_pr', taken);
+    taken.add(a);
+    expect(a).toBe('mcp__gh__get_pr');
+    const b = mcpToolName('gh', 'get.pr', taken);
+    expect(b).not.toBe(a);
+    expect(b).toMatch(/^mcp__gh__get_pr_[0-9a-z]{6}$/);
+    const long = 'x'.repeat(80);
+    const l1 = mcpToolName('srv', `${long}_one`, new Set());
+    const l2 = mcpToolName('srv', `${long}_two`, new Set([l1]));
+    expect(l1.length).toBeLessThanOrEqual(64);
+    expect(l2.length).toBeLessThanOrEqual(64);
+    expect(l1).not.toBe(l2);
+    const tools = mcpTools({ servers: [{ name: 'gh', tools: [{ name: 'get.pr' }, { name: 'get_pr' }] }] }, 'claude');
+    expect(new Set(tools.map((t) => t.schema.name)).size).toBe(2);
+  });
+
+  it('sub-agents get read-only MCP tools only; proposal tools exist only with a UI', async () => {
+    const { mcpTools } = await import('./tools/mcp');
+    const mcp = mcpTools(
+      { servers: [{ name: 'gh', tools: [{ name: 'search_issues', annotations: { readOnlyHint: true } }, { name: 'close_issue' }] }] },
+      'claude'
+    );
+    const names = (t: any[]) => t.map((x) => x.schema.name);
+    const sub = names(readOnlyTools({ mcp }));
+    expect(sub).toContain('mcp__gh__search_issues');
+    expect(sub).not.toContain('mcp__gh__close_issue');
+    expect(sub).toContain('list_silences');
+
+    const headless = names(buildToolset('chat', { mcp }));
+    expect(headless).not.toEqual(expect.arrayContaining(['draft_dashboard']));
+    expect(headless).not.toContain('draft_silence');
+    expect(headless).toContain('mcp__gh__close_issue');
+    const withUi = names(buildToolset('chat', { mcp, propose: () => undefined }));
+    expect(withUi).toEqual(expect.arrayContaining(['draft_dashboard', 'propose_dashboard_edit', 'draft_silence', 'draft_alert_rule']));
+  });
+
+  it('proposal tools fail loudly instead of claiming success when nothing can show them', async () => {
+    const { draftSilence } = await import('./tools/actions');
+    await expect(
+      draftSilence.run({ matchers: [{ name: 'a', value: 'b' }], duration: '1h', comment: 'x' }, ctxWith(fakeHttp(() => [])))
+    ).rejects.toThrow(/not available in this context/);
+  });
+});

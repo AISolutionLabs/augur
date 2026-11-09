@@ -25,13 +25,42 @@ export async function loadMcpCatalog(http: GrafanaHttp, dsUid: string): Promise<
 
 const safeName = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '_');
 
+/** Short stable hash (FNV-1a) used to keep sanitised/truncated tool names unique. */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36).padStart(6, '0').slice(-6);
+}
+
+/**
+ * API tool name for an MCP tool: mcp__<server>__<tool>, at most 64 chars of [a-zA-Z0-9_-].
+ * Sanitising or truncating can make two different tools look alike ("my.tool" vs "my_tool", long
+ * names sharing a prefix); those get a hash suffix of the original server/tool pair so none is
+ * silently dropped as a duplicate.
+ */
+export function mcpToolName(server: string, tool: string, taken: Set<string>): string {
+  const plain = `mcp__${safeName(server)}__${safeName(tool)}`;
+  const exact = plain === `mcp__${server}__${tool}`;
+  if (plain.length <= 64 && exact && !taken.has(plain)) {
+    return plain;
+  }
+  const suffix = `_${shortHash(`${server}\u0000${tool}`)}`;
+  return `${plain.slice(0, 64 - suffix.length)}${suffix}`;
+}
+
 export function mcpTools(catalog: McpCatalog, dsUid: string): ToolDefinition[] {
   const out: ToolDefinition[] = [];
+  const taken = new Set<string>();
   for (const server of catalog.servers) {
     for (const t of server.tools ?? []) {
-      const name = `mcp__${safeName(server.name)}__${safeName(t.name)}`.slice(0, 64);
+      const name = mcpToolName(server.name, t.name, taken);
+      taken.add(name);
       const readOnly = t.annotations?.readOnlyHint === true;
       out.push({
+        readOnly,
         schema: {
           name,
           description: `[MCP server "${server.name}"${readOnly ? ', read-only' : ''}] ${t.description ?? t.name}`.slice(0, 1024),

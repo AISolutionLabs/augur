@@ -9,6 +9,14 @@ import { clip, framesOf, summarizeTimeSeries } from '../frames';
 import { iso, parseDurationSeconds, resolveRange } from '../time';
 import { dashboardUrl } from '../links';
 
+/** Proposal tools must not pretend to have shown something when no UI can receive it. */
+export function requirePropose(ctx: ToolContext) {
+  if (!ctx.propose) {
+    throw new Error('proposals are not available in this context (no user interface to review them); describe the change in your answer instead');
+  }
+  return ctx.propose;
+}
+
 // ---------------------------------------------------------------- dashboard edits
 
 interface PanelPatch extends Partial<PanelSpec> {
@@ -244,7 +252,7 @@ export const proposeDashboardEdit: ToolDefinition = {
   run: async (input, ctx) => {
     const p = await buildDashboardEdit(input as EditInput, ctx);
     (p as any).summary = input.summary;
-    ctx.propose?.(p);
+    requirePropose(ctx)(p);
     const bad = p.checks.filter((c) => c.status === 'error' || c.status === 'empty');
     return [
       `Edit proposal for "${p.title}" shown to the user (Apply / Discard). Not applied yet.`,
@@ -331,7 +339,7 @@ export const draftSilence: ToolDefinition = {
       comment: String(input.comment ?? ''),
       matchingAlerts: matching,
     };
-    ctx.propose?.(p);
+    requirePropose(ctx)(p);
     return `Silence proposal shown to the user (not created). It would currently silence ${matching.length} firing alert(s)${matching.length ? ':\n' + matching.slice(0, 15).join('\n') : '. Check the matchers if you expected matches.'}`;
   },
 };
@@ -410,7 +418,7 @@ export const draftAlertRule: ToolDefinition = {
       ],
       preview,
     };
-    ctx.propose?.(p);
+    requirePropose(ctx)(p);
     return `Alert rule proposal shown to the user (not created). Current evaluation:\n${preview}`;
   },
 };

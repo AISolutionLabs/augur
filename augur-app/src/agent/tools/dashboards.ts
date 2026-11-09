@@ -51,7 +51,7 @@ const panelSchema = {
   required: ['title', 'type'],
 };
 
-export function draftDashboardTool(onDraft: (d: DashboardDraft) => void): ToolDefinition {
+export function draftDashboardTool(onDraft?: (d: DashboardDraft) => void): ToolDefinition {
   return {
     schema: {
       name: 'draft_dashboard',
@@ -91,6 +91,9 @@ export function draftDashboardTool(onDraft: (d: DashboardDraft) => void): ToolDe
     },
     describe: (i) => `Draft dashboard "${i.title}" (${(i.panels ?? []).length} panels)`,
     run: async (input, ctx) => {
+      if (!onDraft) {
+        throw new Error('dashboard drafts are not available in this context (no user interface to review them)');
+      }
       const draft = await buildDashboardDraft(input as DashboardSpec, ctx);
       onDraft(draft);
       const bad = draft.checks.filter((c) => c.status === 'error' || c.status === 'empty');

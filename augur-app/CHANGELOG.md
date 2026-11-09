@@ -4,6 +4,7 @@
 
 - Durable runs: the agent runs outside React, so investigations survive closing the sidebar and navigating Grafana; transcript checkpointed after every step with **Resume** after reload or crash; transient gateway errors retried with backoff; leave-page confirmation while running.
 - Context management: token-based budget with tiered compaction, automatic recovery from "prompt too long", near-duplicate log lines collapsed into counted groups.
+- Toolsets: sub-agents can use MCP tools annotated read-only (never ones that need approval); proposal tools are offered only when a UI can show proposals, and fail loudly otherwise; MCP tool names that collide after sanitising/truncation get a stable hash suffix instead of being dropped.
 - Prompts: investigations get a reminder after 4 rounds of queries without updating findings/hypotheses; the user's timezone (Grafana preference or browser) is injected so reports show local time and relative age next to UTC; queries and template variables must be written in code spans/blocks (Grafana's Markdown otherwise turns `__name__` into bold).
 - Fix: abort listeners are removed when requests, backoff sleeps and approval prompts settle (no accumulation on long investigations); retry backoff has ±50% jitter so parallel sub-agents don't retry in lockstep; MCP discovery errors and warnings shown in the chat.
 - Fix: single-sample summaries (instant queries, alert-rule previews) failed on multi-point series.
