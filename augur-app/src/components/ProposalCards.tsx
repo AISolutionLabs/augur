@@ -134,9 +134,9 @@ function SilenceCard({ p, onApplied }: { p: SilenceProposal; onApplied: Proposal
       return { url };
     });
   return (
-    <Shell kicker="Proposed silence" title={p.matchers.map((m) => `${m.name}${m.isEqual ? '' : '!'}${m.isRegex ? '=~' : '='}"${m.value}"`).join(', ')} badges={<Badge color={p.matchingAlerts.length ? 'orange' : 'blue'} text={`${p.matchingAlerts.length} firing alerts match`} />}>
+    <Shell kicker="Proposed silence" title={p.matchers.map((m) => `${m.name}${m.isEqual ? '' : '!'}${m.isRegex ? '=~' : '='}"${m.value}"`).join(', ')} badges={<Badge color={p.matchingAlerts.length ? 'orange' : 'blue'} text={`${p.matchingAlerts.length} firing alert${p.matchingAlerts.length === 1 ? ' matches' : 's match'}`} />}>
       <div className={s.muted}>
-        Until {p.endsAt} · {p.comment}
+        For {Math.max(1, Math.round((Date.parse(p.endsAt) - Date.parse(p.startsAt)) / 60_000))} min (until {new Date(p.endsAt).toISOString().slice(0, 16).replace('T', ' ')} UTC) · {p.comment}
       </div>
       {p.matchingAlerts.length > 0 && <pre className={s.pre}>{p.matchingAlerts.slice(0, 20).join('\n')}</pre>}
       {a.error && <Alert severity="error" title="Create failed">{a.error}</Alert>}
@@ -145,9 +145,11 @@ function SilenceCard({ p, onApplied }: { p: SilenceProposal; onApplied: Proposal
           View silences
         </LinkButton>
       ) : (
-        <Button icon="bell-slash" onClick={create} disabled={a.busy}>
-          {a.busy ? 'Creating…' : 'Create silence'}
-        </Button>
+        <Stack gap={1}>
+          <Button icon="bell-slash" onClick={create} disabled={a.busy}>
+            {a.busy ? 'Creating…' : 'Create silence'}
+          </Button>
+        </Stack>
       )}
     </Shell>
   );

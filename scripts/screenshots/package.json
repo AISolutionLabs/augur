@@ -1,0 +1,14 @@
+{
+  "name": "augur-screenshots",
+  "private": true,
+  "description": "Renders the real Augur UI (Grafana UI library, scripted demo data) and captures README screenshots",
+  "scripts": {
+    "build": "node build.mjs",
+    "shoot": "node shoot.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "puppeteer-core": "^24.0.0",
+    "@iconscout/unicons": "^4.0.8"
+  }
+}

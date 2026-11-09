@@ -2,13 +2,16 @@ import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
 export type AuthMethod = 'apiKey' | 'oauth' | 'none';
-export type ApiKeyHeader = 'authorization' | 'x-api-key';
+export type ApiKeyHeader = 'authorization' | 'x-api-key' | 'api-key';
+export type ApiFormat = 'anthropic' | 'openai';
 export type OAuthTokenType = 'access' | 'id';
 
 /** Not used for panel queries; present to satisfy the datasource contract. */
 export interface ClaudeQuery extends DataQuery {}
 
 export interface ClaudeDataSourceOptions extends DataSourceJsonData {
+  apiFormat?: ApiFormat;
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
   authMethod?: AuthMethod;
   apiKeyHeader?: ApiKeyHeader;
   /** Grafana's standard flag: forward the signed-in user's OAuth token to the plugin backend. */

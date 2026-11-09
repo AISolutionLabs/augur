@@ -11,6 +11,23 @@ Augur adds a Claude-powered observability engineer to self-hosted Grafana (OSS o
 
 Data queries run **as the signed-in user** through Grafana's own APIs, so Grafana RBAC applies. Model calls go through your gateway (LiteLLM, the Anthropic API, or any Claude Messages-compatible endpoint), using **either a gateway API key or each user's own OAuth/OIDC token** (e.g. Entra ID). Nothing leaves your network except the model call you configure.
 
+![Augur investigating a checkout latency incident: specialist sub-agents, hypothesis board and findings](docs/img/augur-investigation.gif)
+
+<sub>The real Augur UI (Grafana UI components) running a scripted demo incident; see <a href="scripts/screenshots">scripts/screenshots</a>. More: <a href="docs/img/augur-investigation.png">full investigation report</a> · <a href="docs/img/augur-proposals.png">dashboard, alert-rule and silence proposals</a>.</sub>
+
+## Quick start (Docker)
+
+Try it locally with Grafana, Prometheus, Loki and Tempo preloaded with sample telemetry:
+
+```bash
+git clone https://github.com/AISolutionLabs/augur && cd augur
+make install build                       # needs Node 22, Go and mage; or unzip the release zips into augur-*/dist
+export ANTHROPIC_API_KEY=sk-ant-...      # or edit deploy/provisioning/datasources/augur.yaml for LiteLLM
+docker compose -f deploy/docker-compose.yaml up
+```
+
+Open http://localhost:3000 (admin/admin) → **Augur**, and ask *"What's the slowest service right now and why?"*
+
 > Grafana is a trademark of Raintank, Inc. (Grafana Labs). Claude is a trademark of Anthropic, PBC. Augur is an independent open-source project, not affiliated with or endorsed by either.
 
 ---
@@ -79,6 +96,57 @@ There are two plugins because Grafana only forwards a user's OAuth token to *dat
 | Proposals (user applies) | `draft_dashboard`, `propose_dashboard_edit`, `draft_silence`, `draft_alert_rule` |
 | MCP | `mcp__<server>__<tool>` for every tool your MCP servers expose |
 
+### How investigations work
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant L as Lead agent
+  participant S as Sub-agents (parallel)
+  participant G as Grafana APIs
+  U->>L: "checkout p99 jumped. Why?"
+  L->>G: alerts, annotations, skills, past investigations, infra memory
+  L->>S: delegate([metrics, logs, traces])  (one tool call)
+  par each specialist, own context and tool budget
+    S->>G: PromQL / LogQL / TraceQL (read-only)
+  end
+  S-->>L: condensed briefs (findings, anomalies, leads)
+  L->>L: update_hypothesis / record_finding
+  L-->>L: tries to conclude → conclusion gate: "falsify the leading hypothesis"
+  L->>G: targeted checks (timing, unaffected peers, alternatives)
+  L-->>U: report: summary, timeline, evidence (Explore links), root cause, actions
+```
+
+- **One lead agent orchestrates through tool calls.** `delegate` starts up to four specialist sub-agents at once. Each runs the same agent loop with its own fresh context, a read-only toolset (it can't propose changes or delegate further), a 12-step budget, and a smaller context budget. Each returns a brief capped at about 6k characters, so the lead's context stays focused and the specialists can dig deep. Their tool calls appear live in the timeline, labelled `[metrics]`, `[logs]` and so on.
+- **Hypotheses are explicit state.** Every candidate cause is tracked with a status (open, supported, refuted, confirmed), a confidence and its evidence. When the lead tries to finish, a **conclusion gate** sends it back once to falsify its leading hypothesis unless it has already done so.
+- **Everything is grounded:** every claim in the report links to the query behind it.
+
+### Context management
+
+Raw Grafana responses never reach the model. Tools summarise in the browser before anything is sent:
+
+| Signal | What the model sees |
+|---|---|
+| Metrics | Per-series min/max/avg/last, peak time and ~12 downsampled samples; top 25 series by peak |
+| Logs | Newest lines, near-duplicates collapsed into `[N× similar]` groups (IDs, numbers and timestamps normalised), long lines clipped to 400 characters, stream summary |
+| Traces | Services, span count, error spans with status messages, and the 12 slowest spans with key attributes, not the full span tree |
+| Everything | Each tool result capped at ~14k characters, with a hint to narrow the query |
+
+The conversation is kept under a **token budget** (140k by default, estimated conservatively). Older tool results are compacted in tiers: an excerpt first, then a one-line stub. The latest exchanges are always kept intact. If the gateway still reports *prompt too long*, Augur compacts harder and retries once. Prompt caching is applied to the system prompt, tools and latest turn.
+
+### Durability
+
+The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
+
+### Models
+
+Augur is designed and evaluated with **Claude**. Its prompts, tool schemas and agent loop assume a model that is strong at multi-step tool use, and the default is `claude-sonnet-5-5`. You can still choose your gateway and model:
+
+- **Claude Messages format (default):** the Anthropic API, LiteLLM `/v1/messages` (which can also route to Bedrock, Vertex or other providers behind your proxy), or any Messages-compatible gateway.
+- **OpenAI-compatible format:** Chat Completions endpoints such as Azure OpenAI, vLLM, Ollama, OpenAI or LiteLLM `/v1/chat/completions`. The backend translates messages, tool calls and tool results in both directions, and sends the key as `Authorization`, `x-api-key` or `api-key` (Azure).
+
+Smaller or open-weight models will run, but investigation quality depends heavily on how reliably they use tools.
+
 ---
 
 ## Install
@@ -95,8 +163,6 @@ Requires **Grafana 12.0 or later** (OSS or Enterprise). The same build runs on 1
 
 The docked sidebar uses Grafana's extension sidebar. On Grafana versions without it, every entry point (panel menu, Explore, alerts, command palette) opens the full Augur page instead.
 
-**Local demo:** `make build && export ANTHROPIC_API_KEY=… && docker compose -f deploy/docker-compose.yaml up`, then open http://localhost:3000 (admin/admin). This runs `grafana/otel-lgtm` with sample telemetry.
-
 ---
 
 ## Configure
@@ -106,7 +172,8 @@ The docked sidebar uses Grafana's extension sidebar. On Grafana versions without
 | Setting | Notes |
 |---|---|
 | URL | e.g. `https://litellm.example.internal` or `https://api.anthropic.com` |
-| Auth: **API key** | Encrypted. Sent as `Authorization: Bearer` (LiteLLM) or `x-api-key` (Anthropic). |
+| API format | **Claude Messages** (default) or **OpenAI-compatible** (Chat Completions; Azure path and `?api-version=` go in *Messages path*) |
+| Auth: **API key** | Encrypted. Sent as `Authorization: Bearer` (LiteLLM, OpenAI), `x-api-key` (Anthropic) or `api-key` (Azure). |
 | Auth: **Forward OAuth token** | Each user's own access token or ID token. Requires Grafana login via OAuth/OIDC. |
 | Models | Default and allowed models; anything else is rejected server-side. |
 | MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, and approval policy. |
@@ -194,7 +261,7 @@ apps:
 - MCP tools not annotated read-only require an explicit **Allow once** from the user. Admins can restrict tools per server with globs.
 - Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions.
 - The backend accepts a fixed set of Messages API fields and enforces the model allow-list, `max_tokens` cap and request/response size limits.
-- Conversations are stored only in the user's browser. Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
+- Conversations and run checkpoints are stored only in the user's browser (localStorage). Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
 
 ---
 
@@ -223,9 +290,11 @@ Each release runs lint, tests, the Grafana 12.0 compatibility check and the full
 
 To sign, add the repository secret `GRAFANA_ACCESS_POLICY_TOKEN`. For a private signature, also add the variable `GRAFANA_SIGN_ROOT_URLS` (e.g. `https://grafana.example.com`). Without the secret, unsigned builds are published.
 
+**Screenshots:** `cd scripts/screenshots && npm i && node build.mjs && node shoot.mjs` renders the real components with `@grafana/ui` against a scripted demo incident in headless Chrome and regenerates `docs/img`.
+
 **Signing:** `npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` (private signing). Community signing requires the ID prefix (`augur-`) to match your grafana.com org slug.
 
-**Roadmap:** scheduled automations and alert-triggered investigations (server-side runner), Slack, dashboard v2 schema editing, streaming responses.
+**Roadmap:** server-side runner for scheduled automations, alert-triggered and cross-device investigations; Slack; dashboard v2 schema editing; streaming responses.
 
 ## License
 

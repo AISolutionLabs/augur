@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Durable runs: the agent runs outside React, so investigations survive closing the sidebar and navigating Grafana; transcript checkpointed after every step with **Resume** after reload or crash; transient gateway errors retried with backoff; leave-page confirmation while running.
+- Context management: token-based budget with tiered compaction, automatic recovery from "prompt too long", near-duplicate log lines collapsed into counted groups.
+- Fix: single-sample summaries (instant queries, alert-rule previews) failed on multi-point series.
+- UI: finding rows no longer duplicated by their tool rows; clearer silence duration.
+- README: screenshots/GIF of the real UI, quick start, investigation architecture, context management, durability and model support.
+
 ## 1.1.0
 
 - Grafana 12.0+ support (in addition to 13.x).

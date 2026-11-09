@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AISolutionLabs/augur/augur-datasource/pkg/models"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/resource/httpadapter"
-	"github.com/AISolutionLabs/augur/augur-datasource/pkg/models"
 )
 
 var (
@@ -107,9 +107,12 @@ func (d *Datasource) applyAuth(out *http.Request, incoming http.Header) error {
 	s := d.settings
 	switch s.AuthMethod {
 	case models.AuthMethodAPIKey:
-		if s.APIKeyHeader == models.APIKeyHeaderXAPIKey {
+		switch s.APIKeyHeader {
+		case models.APIKeyHeaderXAPIKey:
 			out.Header.Set("x-api-key", s.Secrets.APIKey)
-		} else {
+		case models.APIKeyHeaderAPIKey:
+			out.Header.Set("api-key", s.Secrets.APIKey)
+		default:
 			out.Header.Set("Authorization", "Bearer "+s.Secrets.APIKey)
 		}
 	case models.AuthMethodOAuth:
@@ -150,7 +153,9 @@ func (d *Datasource) newUpstreamRequest(ctx context.Context, method, path string
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("anthropic-version", d.settings.AnthropicVersion)
+	if d.settings.APIFormat != models.APIFormatOpenAI {
+		req.Header.Set("anthropic-version", d.settings.AnthropicVersion)
+	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -170,7 +175,7 @@ func (d *Datasource) newUpstreamRequest(ctx context.Context, method, path string
 
 func isAuthHeader(k string) bool {
 	switch strings.ToLower(k) {
-	case "authorization", "x-api-key", "cookie", "proxy-authorization":
+	case "authorization", "x-api-key", "api-key", "cookie", "proxy-authorization":
 		return true
 	}
 	return false
@@ -264,7 +269,17 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if cfg := backend.PluginConfigFromContext(r.Context()); cfg.User != nil && cfg.User.Login != "" {
 		out.Metadata = map[string]string{"user_id": cfg.User.Login}
 	}
-	body, err := json.Marshal(out)
+	var body []byte
+	if d.settings.APIFormat == models.APIFormatOpenAI {
+		oai, terr := toOpenAI(out, d.settings.MaxTokensField)
+		if terr != nil {
+			writeError(w, http.StatusBadRequest, "could not translate request: "+terr.Error())
+			return
+		}
+		body, err = json.Marshal(oai)
+	} else {
+		body, err = json.Marshal(out)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not encode request")
 		return
@@ -297,8 +312,12 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	d.logger.Debug("Claude upstream call", "status", resp.StatusCode, "model", model, "duration", time.Since(start).String())
 
+	status := resp.StatusCode
+	if d.settings.APIFormat == models.APIFormatOpenAI {
+		status, respBody = fromOpenAI(status, respBody)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(status)
 	_, _ = w.Write(respBody)
 }
 
@@ -309,6 +328,7 @@ type publicConfig struct {
 	Models       []string `json:"models"`
 	MaxTokens    int      `json:"maxTokens"`
 	AuthMethod   string   `json:"authMethod"`
+	APIFormat    string   `json:"apiFormat"`
 	MCPServers   []string `json:"mcpServers"`
 }
 
@@ -328,6 +348,7 @@ func (d *Datasource) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Models:       d.settings.Models(),
 		MaxTokens:    d.settings.MaxTokens,
 		AuthMethod:   d.settings.AuthMethod,
+		APIFormat:    d.settings.APIFormat,
 		MCPServers:   names,
 	})
 }

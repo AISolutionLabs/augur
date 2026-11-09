@@ -37,6 +37,11 @@ describe('frame summaries', () => {
     expect(text).toContain('peak_at=');
     expect(text).toContain('samples:');
   });
+  it('instant snapshots of multi-point series show the latest value (regression: samples=1)', () => {
+    const text = summarizeTimeSeries(seriesResponse([{ labels: { pool: 'orders' }, values: [11, 15, 20] }]).results.A.frames, { samples: 1 });
+    expect(text).toContain('last=20');
+    expect(text).toMatch(/samples: \d\d:\d\d=20$/m);
+  });
   it('reports empty results helpfully', () => {
     expect(summarizeTimeSeries([])).toMatch(/No data/);
   });
@@ -254,7 +259,7 @@ describe('agent loop', () => {
       msgs.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'n', input: {} }] });
       msgs.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: big }] });
     }
-    compact(msgs, 15_000);
+    compact(msgs, 4_000);
     expect((msgs[1].content as any[])[0].content).toMatch(/elided/);
     expect((msgs[11].content as any[])[0].content).toBe(big);
   });
@@ -288,5 +293,54 @@ describe('prompt and report', () => {
     });
     expect(md.indexOf('pool')).toBeLessThan(md.indexOf('minor'));
     expect(md).toContain('`PromQL: up`');
+  });
+});
+
+describe('context management', () => {
+  it('retries once with a harder compaction when the gateway reports context overflow', async () => {
+    const big = 'y'.repeat(30_000);
+    const history: Message[] = [];
+    for (let i = 0; i < 6; i++) {
+      history.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'n', input: {} }] });
+      history.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: big }] });
+    }
+    history.push({ role: 'assistant', content: [{ type: 'text', text: 'ok' }] });
+    history.push({ role: 'user', content: 'next question' });
+    const sizes: number[] = [];
+    let first = true;
+    const call = async (req: MessagesRequest) => {
+      sizes.push(JSON.stringify(req.messages).length);
+      if (first) {
+        first = false;
+        throw new Error('HTTP 400: prompt is too long: 210000 tokens > 200000 maximum');
+      }
+      return { id: 'm', type: 'message', role: 'assistant', model: 'x', stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] } as MessagesResponse;
+    };
+    const events: AgentEvent[] = [];
+    await runAgent({ call, tools: [], system: 's', messages: history, ctx: ctxWith(fakeHttp(() => ({}))), onEvent: (e) => events.push(e), maxSteps: 3, contextTokenBudget: 60_000 });
+    expect(sizes).toHaveLength(2);
+    expect(sizes[1]).toBeLessThan(sizes[0]);
+    expect(events.some((e) => e.kind === 'assistant_text' && e.text === 'done')).toBe(true);
+  });
+
+  it('checkpoints after each model response and tool batch', async () => {
+    const { call } = scriptedModel([
+      { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'a', name: 'list_datasources', input: {} }] },
+      { content: [{ type: 'text', text: 'fin' }] },
+    ]);
+    const checkpoints: number[] = [];
+    await runAgent({ call, tools: buildToolset('chat'), system: 's', messages: [{ role: 'user', content: 'q' }], ctx: ctxWith(fakeHttp(() => ({}))), onEvent: () => undefined, maxSteps: 5, onProgress: (m) => checkpoints.push(m.length) });
+    expect(checkpoints).toEqual([2, 3, 4]);
+  });
+
+  it('collapses near-duplicate log lines into counted groups', () => {
+    const lines = [
+      ...Array.from({ length: 40 }, (_, i) => ({ t: NOW - i * 1000, line: `ERROR timeout calling payments after ${100 + i}ms req=${(1e15 + i).toString(16)}`, labels: { app: 'checkout' } })),
+      { t: NOW - 50_000, line: 'WARN pool exhausted', labels: { app: 'checkout' } },
+    ];
+    const text = summarizeLogs(logsResponse(lines).results.A.frames, 50);
+    expect(text).toContain('41 lines returned, 2 distinct');
+    expect(text).toMatch(/\[40× similar, oldest/);
+    expect(text).toContain('WARN pool exhausted');
   });
 });

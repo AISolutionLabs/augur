@@ -24,8 +24,10 @@ export interface RunOptions {
   maxSteps: number;
   model?: string;
   maxTokens?: number;
-  /** Approximate character budget for the request before old tool results are elided. */
-  contextCharBudget?: number;
+  /** Approximate token budget for the request before older content is compacted (default 140k). */
+  contextTokenBudget?: number;
+  /** Called after every model response and every batch of tool results (checkpointing). */
+  onProgress?: (messages: Message[]) => void;
   toolConcurrency?: number;
   /**
    * Called when the model wants to stop. Returning text sends it as a user nudge and continues the
@@ -49,16 +51,23 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
       onEvent({ kind: 'done', stopReason: 'aborted', steps });
       return messages;
     }
-    compact(messages, opts.contextCharBudget ?? 450_000);
-    const req = buildRequest(opts.system, messages, toolSchemas, opts.model, opts.maxTokens);
-    if (finalCall) {
-      (req as any).tool_choice = { type: 'none' };
-    }
+    const budget = opts.contextTokenBudget ?? DEFAULT_TOKEN_BUDGET;
+    compact(messages, budget, estimateTokens(opts.system) + estimateTokens(toolSchemas));
     onEvent({ kind: 'status', text: steps === 0 ? 'Thinking…' : `Analysing results (step ${steps + 1})…` });
 
     let resp;
     try {
-      resp = await call(req, ctx.signal);
+      try {
+        resp = await call(withChoice(buildRequest(opts.system, messages, toolSchemas, opts.model, opts.maxTokens), finalCall), ctx.signal);
+      } catch (e) {
+        if (!isContextOverflow(e) || ctx.signal.aborted) {
+          throw e;
+        }
+        // The gateway says the prompt is too long: compact hard and retry once.
+        onEvent({ kind: 'status', text: 'Context is full; compacting older evidence and retrying…' });
+        compact(messages, Math.floor(budget / 2), estimateTokens(opts.system) + estimateTokens(toolSchemas));
+        resp = await call(withChoice(buildRequest(opts.system, messages, toolSchemas, opts.model, opts.maxTokens), finalCall), ctx.signal);
+      }
     } catch (e) {
       if (ctx.signal.aborted) {
         onEvent({ kind: 'done', stopReason: 'aborted', steps });
@@ -75,6 +84,7 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
 
     const content = (resp.content ?? []) as ContentBlock[];
     messages.push({ role: 'assistant', content });
+    opts.onProgress?.(messages);
     for (const b of content) {
       if (b.type === 'text' && (b as TextBlock).text.trim()) {
         onEvent({ kind: 'assistant_text', text: (b as TextBlock).text });
@@ -91,6 +101,7 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
       if (nudge) {
         onEvent({ kind: 'status', text: 'Challenging the leading hypothesis before concluding…' });
         messages.push({ role: 'user', content: [{ type: 'text', text: nudge }] });
+        opts.onProgress?.(messages);
         continue;
       }
     }
@@ -109,7 +120,19 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
       });
     }
     messages.push({ role: 'user', content: userContent });
+    opts.onProgress?.(messages);
   }
+}
+
+function withChoice(req: MessagesRequest, none: boolean): MessagesRequest {
+  return none ? ({ ...req, tool_choice: { type: 'none' } } as MessagesRequest) : req;
+}
+
+const CONTEXT_OVERFLOW = /prompt is too long|context(_| )length|context window|maximum context|too many (input )?tokens|input is too long|reduce the length/i;
+
+export function isContextOverflow(e: unknown): boolean {
+  const msg = (e as any)?.message ?? String(e);
+  return CONTEXT_OVERFLOW.test(msg);
 }
 
 async function runTools(
@@ -163,25 +186,46 @@ export function buildRequest(system: string, messages: Message[], tools: Message
   return { model, system: sys, messages: msgs, tools: toolsCopy, max_tokens: maxTokens };
 }
 
+// Rough token estimate: ~3.2 characters per token for mixed JSON, code and log text (conservative).
+export const CHARS_PER_TOKEN = 3.2;
+export const DEFAULT_TOKEN_BUDGET = 140_000;
+
+export function estimateTokens(x: unknown): number {
+  const s = typeof x === 'string' ? x : JSON.stringify(x ?? '');
+  return Math.ceil(s.length / CHARS_PER_TOKEN);
+}
+
 const ELIDED = '[older tool output elided to save context; re-run the tool if you need it again]';
 
-/** Shrinks the oldest tool results until the conversation fits the budget. Keeps the latest 2 exchanges intact. */
-export function compact(messages: Message[], budget: number) {
-  const size = () => JSON.stringify(messages).length;
+/**
+ * Keeps the conversation under a token budget. The latest two exchanges are never touched.
+ * Tier 1 shrinks old tool results to a 400-char excerpt; tier 2 trims long old assistant text;
+ * tier 3 reduces old tool results to a one-line stub.
+ */
+export function compact(messages: Message[], tokenBudget: number, fixedOverheadTokens = 0) {
+  const budget = Math.max(2_000, tokenBudget - fixedOverheadTokens);
+  const size = () => estimateTokens(messages);
   if (size() <= budget) {
     return;
   }
   const protectFrom = Math.max(0, messages.length - 4);
-  for (let i = 0; i < protectFrom && size() > budget; i++) {
-    const m = messages[i];
-    if (!Array.isArray(m.content)) {
-      continue;
-    }
-    m.content = m.content.map((b) => {
-      if (b.type === 'tool_result' && typeof b.content === 'string' && b.content.length > 600 && !b.content.startsWith(ELIDED)) {
-        return { ...b, content: `${ELIDED}\n${b.content.slice(0, 400)}…` };
+  const tiers: Array<(b: ContentBlock) => ContentBlock> = [
+    (b) =>
+      b.type === 'tool_result' && typeof b.content === 'string' && b.content.length > 600 && !b.content.startsWith(ELIDED)
+        ? { ...b, content: `${ELIDED}\n${b.content.slice(0, 400)}…` }
+        : b,
+    (b) => (b.type === 'text' && (b as TextBlock).text.length > 2_000 ? { ...b, text: `${(b as TextBlock).text.slice(0, 1_500)}… [trimmed]` } : b),
+    (b) => (b.type === 'tool_result' && typeof b.content === 'string' && b.content.length > 160 ? { ...b, content: `${ELIDED} (${b.content.length} chars)` } : b),
+  ];
+  for (const tier of tiers) {
+    for (let i = 0; i < protectFrom && size() > budget; i++) {
+      const m = messages[i];
+      if (Array.isArray(m.content)) {
+        m.content = m.content.map(tier);
       }
-      return b;
-    });
+    }
+    if (size() <= budget) {
+      return;
+    }
   }
 }

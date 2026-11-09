@@ -1,7 +1,7 @@
 import React, { ChangeEvent } from 'react';
 import { Alert, Button, Field, FieldSet, InlineSwitch, Input, RadioButtonGroup, SecretInput, Switch, TagsInput, Stack } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
-import { ApiKeyHeader, AuthMethod, ClaudeDataSourceOptions, ClaudeSecureJsonData, McpAuth, McpServerConfig, OAuthTokenType } from '../types';
+import { ApiFormat, ApiKeyHeader, AuthMethod, ClaudeDataSourceOptions, ClaudeSecureJsonData, McpAuth, McpServerConfig, OAuthTokenType } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<ClaudeDataSourceOptions, ClaudeSecureJsonData> {}
 
@@ -14,6 +14,12 @@ const authOptions: Array<{ label: string; value: AuthMethod; description: string
 const headerOptions: Array<{ label: string; value: ApiKeyHeader }> = [
   { label: 'Authorization: Bearer', value: 'authorization' },
   { label: 'x-api-key', value: 'x-api-key' },
+  { label: 'api-key (Azure)', value: 'api-key' },
+];
+
+const formatOptions: Array<{ label: string; value: ApiFormat; description: string }> = [
+  { label: 'Claude Messages', value: 'anthropic', description: 'Anthropic API, LiteLLM /v1/messages, Bedrock gateways (recommended)' },
+  { label: 'OpenAI-compatible', value: 'openai', description: 'Chat Completions: Azure OpenAI, vLLM, Ollama, LiteLLM /v1/chat/completions' },
 ];
 
 const tokenOptions: Array<{ label: string; value: OAuthTokenType }> = [
@@ -51,11 +57,26 @@ export function ConfigEditor(props: Props) {
             onChange={(e: ChangeEvent<HTMLInputElement>) => onOptionsChange({ ...options, url: e.target.value })}
           />
         </Field>
-        <Field label="Messages path" description="Default /v1/messages (Anthropic and LiteLLM)">
+        <Field label="API format" description="Augur is designed and tested with Claude; other models work through the OpenAI-compatible format but investigation quality depends heavily on the model's tool use.">
+          <RadioButtonGroup options={formatOptions} value={jsonData.apiFormat ?? 'anthropic'} onChange={(v) => setJson({ apiFormat: v })} />
+        </Field>
+        {jsonData.apiFormat === 'openai' && (
+          <Field label="Max tokens parameter" description="Newer OpenAI models require max_completion_tokens">
+            <RadioButtonGroup
+              options={[
+                { label: 'max_tokens', value: 'max_tokens' },
+                { label: 'max_completion_tokens', value: 'max_completion_tokens' },
+              ]}
+              value={jsonData.maxTokensField ?? 'max_tokens'}
+              onChange={(v) => setJson({ maxTokensField: v as 'max_tokens' | 'max_completion_tokens' })}
+            />
+          </Field>
+        )}
+        <Field label="Messages path" description={jsonData.apiFormat === 'openai' ? 'Default /v1/chat/completions (for Azure include the deployment path and ?api-version=…)' : 'Default /v1/messages (Anthropic and LiteLLM)'}>
           <Input
             width={30}
             value={jsonData.messagesPath ?? ''}
-            placeholder="/v1/messages"
+            placeholder={jsonData.apiFormat === 'openai' ? '/v1/chat/completions' : '/v1/messages'}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ messagesPath: e.target.value || undefined })}
           />
         </Field>

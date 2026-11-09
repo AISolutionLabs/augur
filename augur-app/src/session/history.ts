@@ -27,6 +27,8 @@ export interface SessionState {
   findings: Finding[];
   hypotheses: Hypothesis[];
   savedUrl?: string;
+  /** Present while an agent run is in progress or was interrupted (page reload, crash). */
+  run?: { status: 'running' | 'interrupted'; mode: AgentMode; startedAt: number; interruptedAt?: number };
 }
 
 const HISTORY_KEY = `${PLUGIN_ID}/history`;

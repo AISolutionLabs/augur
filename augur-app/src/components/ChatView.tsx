@@ -201,6 +201,26 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
             {s.configError}
           </Alert>
         )}
+        {s.interrupted && (
+          <Alert
+            severity="warning"
+            title="This run was interrupted"
+            data-testid="augur-interrupted"
+          >
+            <Stack gap={1} alignItems="center" wrap="wrap">
+              <span>
+                The page was reloaded or closed while Augur was working (started {new Date(s.interrupted.startedAt).toLocaleTimeString()}). Everything up to the last
+                step is saved.
+              </span>
+              <Button size="sm" icon="play" onClick={() => s.resume()} disabled={!s.dsConfig}>
+                Resume
+              </Button>
+              <Button size="sm" variant="secondary" fill="text" onClick={s.dismissInterrupted}>
+                Dismiss
+              </Button>
+            </Stack>
+          </Alert>
+        )}
         {variant === 'sidebar' && showPanel && <InvestigationPanel findings={session.findings} hypotheses={session.hypotheses} />}
 
         <div className={st.timeline} data-testid="claude-timeline">
@@ -341,7 +361,8 @@ function TimelineItem({ it, s, latestDraft }: { it: Item; s: AugurSession; lates
     case 'assistant':
       return <Markdown text={it.text} className={st.assistant} />;
     case 'tool':
-      return <ToolStep item={{ ...it, kind: 'tool' }} />;
+      // Findings are shown as their own highlighted rows; the tool row would duplicate them.
+      return it.name === 'record_finding' && it.status === 'ok' ? null : <ToolStep item={{ ...it, kind: 'tool' }} />;
     case 'finding':
       return (
         <div className={cx(st.finding, st[`sev_${it.finding.severity}`])}>

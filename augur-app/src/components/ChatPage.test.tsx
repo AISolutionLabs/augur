@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { of, throwError } from 'rxjs';
+import { from, of, throwError } from 'rxjs';
 
 const NOW = Date.parse('2026-11-09T12:00:00Z');
 const posted: Array<{ url: string; data: any; headers?: any }> = [];
@@ -38,6 +38,9 @@ const route = (opts: { url: string; method: string; data?: any; params?: any; he
     const next = modelScript.shift();
     if (next instanceof Error) {
       return next;
+    }
+    if (next instanceof Promise) {
+      return next.then((v: any) => ({ id: 'm', type: 'message', role: 'assistant', model: 'x', stop_reason: 'end_turn', ...v }));
     }
     if (!next) {
       return { id: 'm', type: 'message', role: 'assistant', model: 'x', stop_reason: 'end_turn', content: [{ type: 'text', text: '(no more script)' }] };
@@ -93,6 +96,9 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: () => ({
     fetch: (opts: any) => {
       const r = route(opts);
+      if (r instanceof Promise) {
+        return from(r.then((data) => ({ data })));
+      }
       return r instanceof Error ? throwError(() => ({ status: 401, data: { error: { message: r.message } } })) : of({ data: r });
     },
   }),
@@ -110,6 +116,7 @@ jest.mock('@grafana/runtime', () => ({
 
 import { ChatPage } from './ChatPage';
 import Sidebar from './Sidebar';
+import { resetStoreForTests } from '../session/store';
 
 function renderPage(path = '/a/augur-assistant-app') {
   return render(
@@ -133,7 +140,63 @@ beforeEach(() => {
   appSettings = {};
   localStorage.clear();
   sessionStorage.clear();
+  resetStoreForTests();
   Element.prototype.scrollIntoView = jest.fn();
+});
+
+test('a run keeps going when the sidebar closes and shows up on the app page', async () => {
+  let release: (v: any) => void = () => undefined;
+  modelScript = [new Promise((r) => (release = r))];
+  const sidebar = render(
+    <MemoryRouter>
+      <Sidebar />
+    </MemoryRouter>
+  );
+  await ask('slow question');
+  await waitFor(() => expect(modelCalls()).toHaveLength(1));
+  sidebar.unmount(); // user closes the sidebar / navigates away
+  await act(async () => release({ content: [{ type: 'text', text: 'Finished while the sidebar was closed.' }] }));
+  renderPage();
+  expect(await screen.findByText('Finished while the sidebar was closed.')).toBeInTheDocument();
+});
+
+test('an interrupted run can be resumed from its checkpoint after a reload', async () => {
+  const now = Date.now();
+  const interrupted = {
+    id: 's-int',
+    title: 'latency',
+    mode: 'investigate',
+    rangeKey: '1h',
+    createdAt: now - 60_000,
+    updatedAt: now - 1_000,
+    items: [
+      { kind: 'user', text: 'latency spiked', mode: 'investigate' },
+      { kind: 'tool', id: 't1', name: 'query_prometheus', label: 'PromQL: up', input: {}, status: 'running' },
+    ],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Investigate: latency spiked' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'query_prometheus', input: { datasource_uid: 'mimir', expr: 'up' } }] },
+    ],
+    proposals: {},
+    findings: [],
+    hypotheses: [{ id: 'h', statement: 'db', status: 'confirmed', confidence: 0.9, challenged: true, updatedAt: now }],
+    run: { status: 'running', mode: 'investigate', startedAt: now - 60_000 },
+  };
+  localStorage.setItem('augur-assistant-app/history', JSON.stringify([interrupted]));
+  localStorage.setItem('augur-assistant-app/current', 's-int');
+  resetStoreForTests();
+  modelScript = [{ content: [{ type: 'text', text: 'Resumed and concluded.' }] }];
+  renderPage();
+  const banner = await screen.findByTestId('augur-interrupted');
+  await waitFor(() => expect(within(banner).getByRole('button', { name: 'Resume' })).not.toBeDisabled());
+  fireEvent.click(within(banner).getByRole('button', { name: 'Resume' }));
+  await screen.findByText('Resumed and concluded.');
+  const msgs = modelCalls()[0].data.messages;
+  const last = msgs[msgs.length - 1];
+  expect(last.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 't1', is_error: true });
+  expect(JSON.stringify(last)).toContain('has now been resumed');
+  expect(screen.queryByTestId('augur-interrupted')).not.toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem('augur-assistant-app/history')!)[0].run).toBeUndefined();
 });
 
 test('investigation: findings and hypotheses board, conclusion gate, save to Grafana', async () => {
@@ -213,8 +276,7 @@ test('dashboard draft saves only on click; edit proposal applies with version gu
   ];
   renderPage();
   await ask('build a checkout dashboard and add p95 to the service dashboard');
-  const cards = await screen.findAllByTestId(/claude-draft-card|augur-proposal/);
-  expect(cards).toHaveLength(2);
+  await waitFor(() => expect(screen.getAllByTestId(/claude-draft-card|augur-proposal/)).toHaveLength(2));
   expect(posted.some((p) => p.url === '/api/dashboards/db')).toBe(false);
 
   const edit = screen.getByTestId('augur-proposal');
@@ -248,7 +310,7 @@ test('silence and alert rule proposals are created only by the user', async () =
   await ask('silence checkout and add an alert');
   await screen.findByText('Proposals ready.');
   const cards = screen.getAllByTestId('augur-proposal');
-  expect(within(cards[0]).getByText(/1 firing alerts match/)).toBeInTheDocument();
+  expect(within(cards[0]).getByText(/1 firing alert matches/)).toBeInTheDocument();
   expect(posted.some((p) => p.url.endsWith('/silences') || p.url.includes('provisioning'))).toBe(false);
 
   fireEvent.click(within(cards[0]).getByRole('button', { name: /Create silence/ }));

@@ -58,9 +58,12 @@ function stats(values: number[]) {
   return { min: round(min), max: round(max), avg: round(sum / nums.length), last: round(nums[nums.length - 1]), n: nums.length };
 }
 
-function downsample<T>(arr: T[], n: number): T[] {
+export function downsample<T>(arr: T[], n: number): T[] {
   if (arr.length <= n) {
     return arr;
+  }
+  if (n <= 1) {
+    return arr.length ? [arr[arr.length - 1]] : [];
   }
   const out: T[] = [];
   const step = (arr.length - 1) / (n - 1);
@@ -138,7 +141,23 @@ export function isLogFrame(f: RawFrame): boolean {
   );
 }
 
-/** Summarises Loki log frames: newest lines first, labels condensed, long lines clipped. */
+/** Normalises a log line so lines differing only in ids, numbers or timestamps group together. */
+export function logSignature(line: string): string {
+  return line
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?\b/g, '<ts>')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<uuid>')
+    .replace(/\b(?=[0-9a-f]*\d)[0-9a-f]{8,}\b/gi, '<hex>')
+    .replace(/\b(?=\w*\d)(?=\w*[a-z])\w{12,}\b/gi, '<id>')
+    .replace(/\b\d+(\.\d+)?(ms|s|µs|us|ns|%|b|kb|mb)?\b/gi, '<n>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+}
+
+/**
+ * Summarises Loki log frames for the model: newest first, near-duplicate lines collapsed into one
+ * example with a count, labels condensed, long lines clipped. Raw frames never reach the model.
+ */
 export function summarizeLogs(frames: RawFrame[], limit: number, lineChars = 400): string {
   type Row = { t: number; labels: string; line: string };
   const rows: Row[] = [];
@@ -163,16 +182,37 @@ export function summarizeLogs(frames: RawFrame[], limit: number, lineChars = 400
     return 'No log lines matched. Check the stream selector and filters, or widen the time range.';
   }
   rows.sort((a, b) => b.t - a.t);
-  const shown = rows.slice(0, limit);
-  const out = [`${rows.length} lines returned (newest first, showing ${shown.length}). Streams:`];
+
+  type Group = { first: Row; last: Row; count: number };
+  const groups = new Map<string, Group>();
+  for (const r of rows) {
+    const key = `${r.labels}|${logSignature(r.line)}`;
+    const g = groups.get(key);
+    if (g) {
+      g.count++;
+      g.last = r;
+    } else {
+      groups.set(key, { first: r, last: r, count: 1 });
+    }
+  }
+  const ordered = [...groups.values()];
+  const shown = ordered.slice(0, limit);
+  const out = [
+    `${rows.length} lines returned, ${ordered.length} distinct after collapsing near-duplicates (newest first, showing ${shown.length}). Streams:`,
+  ];
   [...labelCounts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
     .forEach(([l, c]) => out.push(`  ${c}× ${l}`));
   out.push('Lines:');
-  for (const r of shown) {
+  for (const g of shown) {
+    const r = g.first;
     const line = r.line.length > lineChars ? r.line.slice(0, lineChars) + '…' : r.line;
-    out.push(`${r.t ? iso(r.t) : '?'} ${labelCounts.size > 1 ? r.labels + ' ' : ''}${line.replace(/\s+/g, ' ')}`);
+    const repeat = g.count > 1 ? `[${g.count}× similar, oldest ${g.last.t ? iso(g.last.t) : '?'}] ` : '';
+    out.push(`${r.t ? iso(r.t) : '?'} ${repeat}${labelCounts.size > 1 ? r.labels + ' ' : ''}${line.replace(/\s+/g, ' ')}`);
+  }
+  if (ordered.length > shown.length) {
+    out.push(`…${ordered.length - shown.length} more distinct lines not shown; narrow the query or use count_over_time / loki_patterns.`);
   }
   return out.join('\n');
 }

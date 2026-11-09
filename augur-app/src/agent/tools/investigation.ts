@@ -109,7 +109,7 @@ export function delegateTool(deps: DelegateDeps): ToolDefinition {
                   deps.onEvent(e);
                 }
               },
-              contextCharBudget: 250_000,
+              contextTokenBudget: 80_000,
             });
             const last = [...out].reverse().find((m) => m.role === 'assistant');
             const text = Array.isArray(last?.content)

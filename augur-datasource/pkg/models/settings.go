@@ -18,8 +18,15 @@ const (
 
 // Which header carries the static API key.
 const (
-	APIKeyHeaderAuthorization = "authorization" // Authorization: Bearer <key> (LiteLLM virtual keys)
+	APIKeyHeaderAuthorization = "authorization" // Authorization: Bearer <key> (LiteLLM virtual keys, OpenAI)
 	APIKeyHeaderXAPIKey       = "x-api-key"     // x-api-key: <key> (Anthropic API)
+	APIKeyHeaderAPIKey        = "api-key"       // api-key: <key> (Azure OpenAI)
+)
+
+// Wire format of the model endpoint.
+const (
+	APIFormatAnthropic = "anthropic" // Claude Messages API (/v1/messages): Anthropic, LiteLLM, Bedrock gateways
+	APIFormatOpenAI    = "openai"    // Chat Completions (/v1/chat/completions): Azure OpenAI, vLLM, Ollama, OpenAI
 )
 
 // Which OAuth token to forward when AuthMethod is oauth.
@@ -41,6 +48,9 @@ const (
 type PluginSettings struct {
 	URL string `json:"-"`
 
+	APIFormat string `json:"apiFormat"`
+	// For openai format: "max_tokens" (default) or "max_completion_tokens" (newer OpenAI models).
+	MaxTokensField string `json:"maxTokensField"`
 	AuthMethod     string `json:"authMethod"`
 	APIKeyHeader   string `json:"apiKeyHeader"`
 	OAuthPassThru  bool   `json:"oauthPassThru"` // must be true for Grafana to forward the user's token
@@ -121,8 +131,14 @@ func (s *PluginSettings) applyDefaults() {
 	if s.OAuthTokenType == "" {
 		s.OAuthTokenType = OAuthTokenAccess
 	}
+	if s.APIFormat == "" {
+		s.APIFormat = APIFormatAnthropic
+	}
 	if s.MessagesPath == "" {
 		s.MessagesPath = DefaultMessagesPath
+		if s.APIFormat == APIFormatOpenAI {
+			s.MessagesPath = "/v1/chat/completions"
+		}
 	}
 	if s.ModelsPath == "" {
 		s.ModelsPath = DefaultModelsPath
@@ -162,8 +178,8 @@ func (s *PluginSettings) Validate() error {
 		if s.Secrets == nil || s.Secrets.APIKey == "" {
 			return fmt.Errorf("auth method is API key but no API key is configured")
 		}
-		if s.APIKeyHeader != APIKeyHeaderAuthorization && s.APIKeyHeader != APIKeyHeaderXAPIKey {
-			return fmt.Errorf("apiKeyHeader must be %q or %q", APIKeyHeaderAuthorization, APIKeyHeaderXAPIKey)
+		if s.APIKeyHeader != APIKeyHeaderAuthorization && s.APIKeyHeader != APIKeyHeaderXAPIKey && s.APIKeyHeader != APIKeyHeaderAPIKey {
+			return fmt.Errorf("apiKeyHeader must be %q, %q or %q", APIKeyHeaderAuthorization, APIKeyHeaderXAPIKey, APIKeyHeaderAPIKey)
 		}
 	case AuthMethodOAuth:
 		if !s.OAuthPassThru {
@@ -175,6 +191,12 @@ func (s *PluginSettings) Validate() error {
 	case AuthMethodNone:
 	default:
 		return fmt.Errorf("unknown authMethod %q", s.AuthMethod)
+	}
+	if s.APIFormat != APIFormatAnthropic && s.APIFormat != APIFormatOpenAI {
+		return fmt.Errorf("apiFormat must be %q or %q", APIFormatAnthropic, APIFormatOpenAI)
+	}
+	if s.MaxTokensField != "" && s.MaxTokensField != "max_tokens" && s.MaxTokensField != "max_completion_tokens" {
+		return fmt.Errorf("maxTokensField must be max_tokens or max_completion_tokens")
 	}
 	seen := map[string]bool{}
 	for _, m := range s.MCPServers {
