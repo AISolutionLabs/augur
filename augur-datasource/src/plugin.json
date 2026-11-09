@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "Claude (Augur)",
+  "id": "augur-claude-datasource",
+  "metrics": false,
+  "backend": true,
+  "executable": "gpx_augur",
+  "info": {
+    "description": "Claude chat backend for the Claude app: proxies the Messages API with an API key or the signed-in user's forwarded OAuth token.",
+    "author": {
+      "name": "AISolutionLabs",
+      "url": "https://github.com/AISolutionLabs"
+    },
+    "keywords": [
+      "claude",
+      "anthropic",
+      "llm",
+      "ai",
+      "litellm"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "Source",
+        "url": "https://github.com/AISolutionLabs/augur"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/AISolutionLabs/augur/blob/main/LICENSE"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=13.0.0",
+    "plugins": []
+  }
+}

@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  # Option A: shared LiteLLM virtual key (or Anthropic key with apiKeyHeader: x-api-key)
+  - name: Claude
+    uid: claude
+    type: augur-claude-datasource
+    access: proxy
+    url: https://litellm.example.internal
+    jsonData:
+      authMethod: apiKey
+      apiKeyHeader: authorization
+      defaultModel: claude-sonnet-5-5
+      allowedModels: [claude-opus-5-5, claude-haiku-5-5]
+    secureJsonData:
+      apiKey: $LITELLM_API_KEY
+
+  # Option B: forward each user's Entra ID / OIDC token to the gateway
+  - name: Claude (my identity)
+    uid: claude-oauth
+    type: augur-claude-datasource
+    access: proxy
+    url: https://litellm.example.internal
+    jsonData:
+      authMethod: oauth
+      oauthPassThru: true
+      oauthTokenType: access
+      defaultModel: claude-sonnet-5-5

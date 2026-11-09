@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: augur-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: augur-app/.nvmrc
+          cache: npm
+          cache-dependency-path: augur-app/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint src
+      - run: npx jest --ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: augur-assistant-app
+          path: augur-app/dist
+
+  datasource:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: augur-datasource
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: augur-datasource/.nvmrc
+          cache: npm
+          cache-dependency-path: augur-datasource/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: augur-datasource/go.mod
+          cache-dependency-path: augur-datasource/go.sum
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx eslint src
+      - run: npm run build
+      - run: go vet ./...
+      - run: go test ./...
+      - name: Build backend for all platforms
+        uses: magefile/mage-action@v3
+        with:
+          version: latest
+          args: -v buildAll
+          workdir: augur-datasource
+      - uses: actions/upload-artifact@v4
+        with:
+          name: augur-claude-datasource
+          path: augur-datasource/dist

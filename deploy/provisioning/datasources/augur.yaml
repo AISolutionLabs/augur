@@ -1,0 +1,18 @@
+apiVersion: 1
+
+datasources:
+  # Anthropic API directly. For LiteLLM: set url to your proxy, apiKeyHeader: authorization,
+  # and the model names your proxy exposes.
+  - name: Claude
+    uid: claude
+    type: augur-claude-datasource
+    access: proxy
+    url: https://api.anthropic.com
+    jsonData:
+      authMethod: apiKey
+      apiKeyHeader: x-api-key
+      defaultModel: claude-sonnet-5-5
+      allowedModels: [claude-opus-5-5, claude-haiku-5-5]
+      maxTokens: 8192
+    secureJsonData:
+      apiKey: $ANTHROPIC_API_KEY

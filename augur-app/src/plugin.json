@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "app",
+  "name": "Augur",
+  "id": "augur-assistant-app",
+  "info": {
+    "keywords": [
+      "claude",
+      "ai",
+      "assistant",
+      "investigation",
+      "loki",
+      "tempo",
+      "mimir",
+      "prometheus"
+    ],
+    "description": "Chat with Claude about your metrics, logs and traces, run deep investigations across the LGTM stack, and build dashboards. Read-only queries run as the signed-in user.",
+    "author": {
+      "name": "AISolutionLabs",
+      "url": "https://github.com/AISolutionLabs"
+    },
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%",
+    "links": [
+      {
+        "name": "Source",
+        "url": "https://github.com/AISolutionLabs/augur"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/AISolutionLabs/augur/blob/main/LICENSE"
+      }
+    ]
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Augur",
+      "path": "/a/%PLUGIN_ID%",
+      "addToNav": true,
+      "defaultNav": true,
+      "icon": "comment-alt"
+    },
+    {
+      "type": "datasource",
+      "name": "Claude (Augur)",
+      "pluginId": "augur-claude-datasource"
+    }
+  ],
+  "dependencies": {
+    "grafanaDependency": ">=13.0.0",
+    "plugins": [
+      {
+        "id": "augur-claude-datasource",
+        "type": "datasource",
+        "name": "Claude (Augur)",
+        "version": "1.x"
+      }
+    ]
+  },
+  "extensions": {
+    "addedLinks": [
+      {
+        "targets": [
+          "grafana/dashboard/panel/menu"
+        ],
+        "title": "Ask Claude about this panel",
+        "description": "Explain what this panel shows and anything unusual"
+      },
+      {
+        "targets": [
+          "grafana/dashboard/panel/menu"
+        ],
+        "title": "Investigate with Claude",
+        "description": "Root-cause analysis across metrics, logs and traces starting from this panel"
+      },
+      {
+        "targets": [
+          "grafana/alerting/alertingrule/action",
+          "grafana/alerting/instance/action"
+        ],
+        "title": "Investigate with Claude",
+        "description": "Root-cause analysis for this alert"
+      },
+      {
+        "targets": [
+          "grafana/commandpalette/action"
+        ],
+        "title": "Ask Claude",
+        "description": "Chat with Claude about your observability data"
+      }
+    ]
+  }
+}

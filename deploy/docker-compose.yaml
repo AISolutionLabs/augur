@@ -1,0 +1,24 @@
+# Local demo: Grafana + Prometheus + Loki + Tempo (grafana/otel-lgtm, with sample telemetry)
+# plus the Augur plugins built into ../augur-app/dist and ../augur-datasource/dist.
+#
+#   make build
+#   export ANTHROPIC_API_KEY=sk-ant-...        # or edit provisioning/datasources/augur.yaml for LiteLLM
+#   docker compose -f deploy/docker-compose.yaml up
+#
+# Grafana: http://localhost:3000  (admin / admin)
+services:
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    ports:
+      - '3000:3000'
+      - '4317:4317'
+      - '4318:4318'
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: augur-assistant-app,augur-claude-datasource
+      GF_PATHS_PLUGINS: /var/lib/grafana-plugins
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ../augur-app/dist:/var/lib/grafana-plugins/augur-assistant-app
+      - ../augur-datasource/dist:/var/lib/grafana-plugins/augur-claude-datasource
+      - ./provisioning/datasources/augur.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/augur.yaml
+      - ./provisioning/plugins/augur.yaml:/otel-lgtm/grafana/conf/provisioning/plugins/augur.yaml
