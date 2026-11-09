@@ -24,7 +24,7 @@ export function useAugurSession(opts: SessionOptions) {
 
   return {
     ...state,
-    interrupted: !state.running && run?.status === 'interrupted' ? run : undefined,
+    interrupted: !state.running && !state.runningElsewhere && run?.status === 'interrupted' ? run : undefined,
     setDsUid: store.setDsUid,
     setModel: store.setModel,
     setSettings: store.setSettings,

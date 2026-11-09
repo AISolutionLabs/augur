@@ -90,6 +90,36 @@ type MCPServer struct {
 	RequireApproval *bool `json:"requireApproval,omitempty"`
 	// AllowedTools: optional glob patterns (path.Match) of tool names to expose. Empty = all.
 	AllowedTools []string `json:"allowedTools,omitempty"`
+	// ReadOnlyTools: glob patterns of tools the admin declares read-only. Read-only tools run without
+	// per-call approval, are available to sub-agents, and need only Viewer.
+	ReadOnlyTools []string `json:"readOnlyTools,omitempty"`
+	// TrustReadOnlyHints: also treat tools the server annotates readOnlyHint=true as read-only.
+	// Off by default: the annotation is self-declared by the server.
+	TrustReadOnlyHints bool `json:"trustReadOnlyHints,omitempty"`
+	// WriteRole: minimum Grafana org role to call tools that are not read-only (Viewer, Editor, Admin).
+	// Default Editor. Enforced server-side, independently of the approval prompt in the UI.
+	WriteRole string `json:"writeRole,omitempty"`
+}
+
+// RoleRank orders Grafana org roles; unknown roles rank lowest.
+func RoleRank(role string) int {
+	switch strings.ToLower(role) {
+	case "admin":
+		return 3
+	case "editor":
+		return 2
+	case "viewer":
+		return 1
+	}
+	return 0
+}
+
+// RequiredWriteRole returns the configured write role, defaulting to Editor.
+func (m MCPServer) RequiredWriteRole() string {
+	if m.WriteRole == "" {
+		return "Editor"
+	}
+	return m.WriteRole
 }
 
 // NeedsApproval reports whether non-read-only tools require user approval.
@@ -215,6 +245,9 @@ func (s *PluginSettings) Validate() error {
 			}
 		default:
 			return fmt.Errorf("MCP server %q: unknown auth %q", m.Name, m.Auth)
+		}
+		if m.WriteRole != "" && RoleRank(m.WriteRole) == 0 {
+			return fmt.Errorf("MCP server %q: writeRole must be Viewer, Editor or Admin", m.Name)
 		}
 		if m.Auth == MCPAuthHeader && m.HeaderName == "" {
 			return fmt.Errorf("MCP server %q: headerName is required for header auth", m.Name)

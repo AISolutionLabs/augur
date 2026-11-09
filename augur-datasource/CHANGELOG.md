@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- **Security:** MCP authorization is now enforced server-side. Only tools in the server's current listing (and the allow-list) can be called; tools are read-only only if they match the admin's `readOnlyTools` globs, or the server's `readOnlyHint` when `trustReadOnlyHints` is enabled; every other tool requires the `writeRole` (default Editor) and returns 403 otherwise. Calls are logged with their classification and user.
+- **Security:** the HTTP client no longer follows redirects, so credentials cannot be forwarded to a redirect target.
+- Config editor: read-only tool globs, role required for other tools, and trust-annotations switch per MCP server; `writeRole` is validated.
+
 ## 1.2.0
 
 - MCP client hardening: concurrent initialize/discovery for the same identity collapsed into one request (no session leaks or stampedes); tool discovery follows up to 50 pages, caps at 512 tools per server and reports truncation or cursor loops as a warning in the UI and logs; oversized responses (> 8 MiB, including a single huge SSE line) fail with a clear error; expired sessions and tool caches evicted (rotating OAuth tokens no longer grow memory); failed discovery cached for 30s.

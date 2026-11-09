@@ -9,6 +9,8 @@ export interface McpToolInfo {
   description?: string;
   inputSchema?: Record<string, unknown>;
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; title?: string };
+  /** Augur's effective read-only decision, made by the backend from the admin's policy. */
+  augurReadOnly?: boolean;
 }
 
 export interface McpCatalog {
@@ -58,7 +60,8 @@ export function mcpTools(catalog: McpCatalog, dsUid: string): ToolDefinition[] {
     for (const t of server.tools ?? []) {
       const name = mcpToolName(server.name, t.name, taken);
       taken.add(name);
-      const readOnly = t.annotations?.readOnlyHint === true;
+      // Never trust the server's own readOnlyHint here: the backend applies the admin's policy.
+      const readOnly = t.augurReadOnly === true;
       out.push({
         readOnly,
         schema: {

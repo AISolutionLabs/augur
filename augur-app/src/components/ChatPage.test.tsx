@@ -24,7 +24,7 @@ const route = (opts: { url: string; method: string; data?: any; params?: any; he
           name: 'wiki',
           requireApproval: true,
           tools: [
-            { name: 'search', description: 'Search wiki', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, annotations: { readOnlyHint: true } },
+            { name: 'search', description: 'Search wiki', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, augurReadOnly: true },
             { name: 'create_page', description: 'Create a page', inputSchema: { type: 'object' } },
           ],
         },
@@ -401,4 +401,61 @@ test('opening from a panel link auto-starts with the panel context', async () =>
   });
   await screen.findByText('This panel shows request rate.');
   expect(JSON.stringify(modelCalls()[0].data.messages[0])).toContain('Panel: \\"RPS\\"');
+});
+
+describe('run lease across tabs', () => {
+  const runningSession = (now: number) => ({
+    id: 's-tab',
+    title: 'shared',
+    mode: 'investigate',
+    rangeKey: '1h',
+    createdAt: now - 60_000,
+    updatedAt: now - 1_000,
+    items: [{ kind: 'user', text: 'why slow', mode: 'investigate' }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Investigate: why slow' }] }],
+    proposals: {},
+    findings: [],
+    hypotheses: [],
+    run: { status: 'running', mode: 'investigate', startedAt: now - 60_000 },
+  });
+
+  test('a second tab follows a live run instead of offering Resume, then takes over when it finishes', async () => {
+    const now = Date.now();
+    localStorage.setItem('augur-assistant-app/history', JSON.stringify([runningSession(now)]));
+    localStorage.setItem('augur-assistant-app/current', 's-tab');
+    localStorage.setItem('augur-assistant-app/lease', JSON.stringify({ sessionId: 's-tab', tabId: 'other-tab', heartbeat: now }));
+    resetStoreForTests();
+    renderPage();
+    await screen.findByTestId('augur-elsewhere');
+    expect(screen.queryByTestId('augur-interrupted')).not.toBeInTheDocument();
+
+    // The other tab finishes: it clears the run, saves its answer and releases the lease.
+    const done = { ...runningSession(now), run: undefined, items: [...runningSession(now).items, { kind: 'assistant', text: 'Answer from the other tab.' }] };
+    localStorage.setItem('augur-assistant-app/history', JSON.stringify([done]));
+    localStorage.removeItem('augur-assistant-app/lease');
+    expect(await screen.findByText('Answer from the other tab.', {}, { timeout: 6000 })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('augur-elsewhere')).not.toBeInTheDocument());
+  }, 15000);
+
+  test('a stale lease means the owning tab died: the run is resumable', async () => {
+    const now = Date.now();
+    localStorage.setItem('augur-assistant-app/history', JSON.stringify([runningSession(now)]));
+    localStorage.setItem('augur-assistant-app/current', 's-tab');
+    localStorage.setItem('augur-assistant-app/lease', JSON.stringify({ sessionId: 's-tab', tabId: 'dead-tab', heartbeat: now - 60_000 }));
+    resetStoreForTests();
+    renderPage();
+    await screen.findByTestId('augur-interrupted');
+    expect(screen.queryByTestId('augur-elsewhere')).not.toBeInTheDocument();
+  });
+
+  test('a running tab holds the lease and releases it when done', async () => {
+    let release: (v: any) => void = () => undefined;
+    modelScript = [new Promise((r) => (release = r))];
+    renderPage();
+    await ask('question');
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('augur-assistant-app/lease') ?? 'null')).toMatchObject({ sessionId: expect.any(String) }));
+    await act(async () => release({ content: [{ type: 'text', text: 'done' }] }));
+    await screen.findByText('done');
+    await waitFor(() => expect(localStorage.getItem('augur-assistant-app/lease')).toBeNull());
+  });
 });

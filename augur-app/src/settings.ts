@@ -48,6 +48,8 @@ export interface AugurSettings {
   /** Folder for saved investigations */
   investigationFolderUid?: string;
   stepBudget?: { chat?: number; investigate?: number };
+  /** Token ceiling per run (input + output + cache writes, cache reads weighted 10%). Default 1.5M. */
+  maxTokensPerRun?: number;
   /** Allow sub-agents in investigations (default true) */
   enableSubAgents?: boolean;
 }
@@ -97,4 +99,11 @@ export function slugify(s: string): string {
 
 export function newId(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+export const DEFAULT_MAX_TOKENS_PER_RUN = 1_500_000;
+
+/** Effective token count for budgeting: cache reads are cheap, so they count at 10%. */
+export function effectiveTokens(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }): number {
+  return u.input_tokens + u.output_tokens + u.cache_creation_input_tokens + Math.round(u.cache_read_input_tokens * 0.1);
 }

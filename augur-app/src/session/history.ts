@@ -1,6 +1,6 @@
 // Conversation history, kept per browser (localStorage). Saved investigations live in Grafana itself.
 
-import { AgentMode, Finding, Hypothesis, Message } from '../agent/types';
+import { AgentMode, EvidenceRecord, Finding, Hypothesis, Message } from '../agent/types';
 import { Proposal } from '../agent/proposals';
 import { PLUGIN_ID } from '../constants';
 
@@ -26,6 +26,8 @@ export interface SessionState {
   proposals: Record<string, Proposal>;
   findings: Finding[];
   hypotheses: Hypothesis[];
+  /** Ledger of every data query executed (reproducible: datasource, query, absolute range, digest). */
+  evidence?: EvidenceRecord[];
   savedUrl?: string;
   /** Present while an agent run is in progress or was interrupted (page reload, crash). */
   run?: { status: 'running' | 'interrupted'; mode: AgentMode; startedAt: number; interruptedAt?: number };

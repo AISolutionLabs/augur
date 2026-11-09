@@ -140,8 +140,16 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func callResource(t *testing.T, ds *Datasource, method, path, body string, headers map[string][]string) *sender {
 	t.Helper()
+	return callResourceAs(t, ds, "Editor", method, path, body, headers)
+}
+
+func callResourceAs(t *testing.T, ds *Datasource, role, method, path, body string, headers map[string][]string) *sender {
+	t.Helper()
 	s := &sender{}
-	req := &backend.CallResourceRequest{Path: path, URL: path, Method: method, Body: []byte(body), Headers: headers}
+	req := &backend.CallResourceRequest{
+		PluginContext: backend.PluginContext{User: &backend.User{Login: "u-" + role, Role: role}},
+		Path:          path, URL: path, Method: method, Body: []byte(body), Headers: headers,
+	}
 	if err := ds.CallResource(context.Background(), req, s); err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +312,7 @@ func TestMCPOversizedResponseFailsClearly(t *testing.T) {
 	defer srv.Close()
 	ds := newDS(t, "http://llm.example", fmt.Sprintf(`{"authMethod":"none","mcpServers":[{"name":"logs","url":%q}]}`, srv.URL), nil)
 	ds.mcp.maxBody = 100_000 // single SSE line larger than the limit
-	s := callResource(t, ds, http.MethodPost, "mcp/call", `{"server":"logs","tool":"dump","arguments":{}}`, nil)
+	s := callResource(t, ds, http.MethodPost, "mcp/call", `{"server":"logs","tool":"get_pr","arguments":{}}`, nil)
 	if s.status != http.StatusBadGateway || !strings.Contains(string(s.body), "exceeds the") {
 		t.Fatalf("%d %s", s.status, s.body)
 	}
@@ -390,5 +398,87 @@ func TestMCPSweepEvictsExpiredSessions(t *testing.T) {
 	}
 	if len(c.tools) != 0 {
 		t.Fatal("stale tools cache kept")
+	}
+}
+
+func TestMCPServerSideAuthorization(t *testing.T) {
+	f := &fakeMCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	// search_runbooks is annotated readOnlyHint=true by the (untrusted) server; get_pr is declared
+	// read-only by the admin; delete_repo is neither.
+	cfg := `{"authMethod":"none","mcpServers":[{"name":"gh","url":%q%s}]}`
+	ds := newDS(t, "http://llm.example", fmt.Sprintf(cfg, srv.URL, `,"readOnlyTools":["get_*"]`), nil)
+
+	call := func(role, tool string) *sender {
+		return callResourceAs(t, ds, role, http.MethodPost, "mcp/call", fmt.Sprintf(`{"server":"gh","tool":%q,"arguments":{"q":"x"}}`, tool), nil)
+	}
+	if s := call("Viewer", "get_pr"); s.status != 200 {
+		t.Fatalf("admin-declared read-only tool should be allowed for Viewer: %d %s", s.status, s.body)
+	}
+	if s := call("Viewer", "search_runbooks"); s.status != http.StatusForbidden || !strings.Contains(string(s.body), "requires the Editor role") {
+		t.Fatalf("self-declared read-only hint must not be trusted by default: %d %s", s.status, s.body)
+	}
+	if s := call("Editor", "search_runbooks"); s.status != 200 {
+		t.Fatalf("Editor may call write tools: %d %s", s.status, s.body)
+	}
+	if s := call("Admin", "not_listed_tool"); s.status != http.StatusForbidden || !strings.Contains(string(s.body), "not offered") {
+		t.Fatalf("unlisted tools must be refused: %d %s", s.status, s.body)
+	}
+	if s := call("", "search_runbooks"); s.status != http.StatusForbidden {
+		t.Fatalf("no role must be refused: %d", s.status)
+	}
+
+	// The listing tells the UI the effective decision.
+	names := map[string]bool{}
+	var out struct {
+		Servers []struct {
+			Tools []struct {
+				Name          string `json:"name"`
+				AugurReadOnly bool   `json:"augurReadOnly"`
+			} `json:"tools"`
+		} `json:"servers"`
+	}
+	_ = json.Unmarshal(callResource(t, ds, http.MethodGet, "mcp/tools", "", nil).body, &out)
+	for _, tl := range out.Servers[0].Tools {
+		names[tl.Name] = tl.AugurReadOnly
+	}
+	if !names["get_pr"] || names["search_runbooks"] || names["delete_repo"] {
+		t.Fatalf("effective read-only flags wrong: %v", names)
+	}
+
+	// Trusting hints and lowering the write role are explicit admin choices.
+	ds = newDS(t, "http://llm.example", fmt.Sprintf(cfg, srv.URL, `,"trustReadOnlyHints":true,"writeRole":"Admin"`), nil)
+	if s := call("Viewer", "search_runbooks"); s.status != 200 {
+		t.Fatalf("trusted hint: %d %s", s.status, s.body)
+	}
+	if s := call("Editor", "delete_repo"); s.status != http.StatusForbidden || !strings.Contains(string(s.body), "Admin role") {
+		t.Fatalf("writeRole Admin: %d %s", s.status, s.body)
+	}
+}
+
+func TestNoRedirectsSoKeysCannotLeak(t *testing.T) {
+	var leaked atomic.Int32
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "" || r.Header.Get("X-Token") != "" || r.Header.Get("api-key") != "" {
+			leaked.Add(1)
+		}
+		w.WriteHeader(200)
+	}))
+	defer attacker.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	ds := newDS(t, redirector.URL, `{"authMethod":"apiKey","apiKeyHeader":"x-api-key"}`, map[string]string{"apiKey": "sk-secret"})
+	s := callMessages(t, ds, minimalBody, nil, nil)
+	if s.status != http.StatusTemporaryRedirect {
+		t.Fatalf("model call should surface the redirect, got %d", s.status)
+	}
+	ds = newDS(t, "http://llm.example", fmt.Sprintf(`{"authMethod":"none","mcpServers":[{"name":"x","url":%q,"auth":"header","headerName":"X-Token"}]}`, redirector.URL), map[string]string{"mcpToken_x": "mcp-secret"})
+	callResource(t, ds, http.MethodGet, "mcp/tools", "", nil)
+	if leaked.Load() != 0 {
+		t.Fatalf("credentials were sent to the redirect target %d time(s)", leaked.Load())
 	}
 }

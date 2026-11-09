@@ -137,7 +137,7 @@ The conversation is kept under a **token budget** (140k by default, estimated co
 
 ### Durability
 
-The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
+The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Only one tab drives a run at a time: other tabs see *Running in another tab* and take over automatically if that tab goes away (a 12-second lease). Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
 
 ### Models
 
@@ -177,7 +177,7 @@ The docked sidebar uses Grafana's extension sidebar. On Grafana versions without
 | Auth: **API key** | Encrypted. Sent as `Authorization: Bearer` (LiteLLM, OpenAI), `x-api-key` (Anthropic) or `api-key` (Azure). |
 | Auth: **Forward OAuth token** | Each user's own access token or ID token. Requires Grafana login via OAuth/OIDC. |
 | Models | Default and allowed models; anything else is rejected server-side. |
-| MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, and approval policy. |
+| MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, read-only tool globs, role required for other tools, and approval policy. |
 
 ```yaml
 apiVersion: 1
@@ -196,10 +196,13 @@ datasources:
         - name: github
           url: https://mcp.example.internal/github/mcp
           auth: bearer
-          allowedTools: ['get_*', 'search_*', 'list_*']
+          allowedTools: ['get_*', 'search_*', 'list_*', 'create_issue']
+          readOnlyTools: ['get_*', 'search_*', 'list_*']   # admin decides what is read-only
+          writeRole: Editor        # role needed for any other tool (Viewer | Editor | Admin)
         - name: ado
           url: https://mcp.example.internal/ado/mcp
           auth: oauth              # forwards the user's Entra token
+          trustReadOnlyHints: true # only for servers you operate: trust their readOnlyHint
     secureJsonData:
       mcpToken_github: ${GITHUB_MCP_TOKEN}
 ```
@@ -259,8 +262,14 @@ apps:
 
 - Credentials never reach the browser. Browser-supplied `Authorization`/`x-api-key` headers are never forwarded, and `extraHeaders` cannot override auth.
 - The model cannot write anything itself. Dashboard, silence and alert changes are proposals that the user applies. Dashboard edits use Grafana's optimistic version check, so a concurrent change is never overwritten, and every save is restorable from version history.
-- MCP tools not annotated read-only require an explicit **Allow once** from the user. Admins can restrict tools per server with globs.
-- Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions.
+- MCP authorization is enforced in the backend: only allow-listed tools that the server currently lists can be called, and only tools the **admin** marks read-only (`readOnlyTools`; servers' own `readOnlyHint` is ignored unless `trustReadOnlyHints` is set) skip the role check. Everything else requires the `writeRole` (default Editor) **and** an **Allow once** click in the UI. Sub-agents only get read-only tools.
+- The backend never follows HTTP redirects, so credentials cannot be bounced to another host.
+- Every data query is recorded in an **evidence ledger** (datasource, query, absolute time range, SHA-256 digest of the response, frame/row counts). Findings cite evidence ids (`E3`), and the ledger is saved with investigations and reports.
+- A per-run token ceiling (default 1.5M, configurable) stops runaway loops; the run then answers from what it has.
+- Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions. This is a mitigation, not a guarantee; the structural controls above are what limit the impact of prompt injection.
+- With OAuth forwarding, Augur forwards the user's token; your gateway and MCP servers must validate issuer, audience and expiry.
+
+See [SECURITY.md](SECURITY.md) for the full trust model and how to report a vulnerability.
 - The backend accepts a fixed set of Messages API fields and enforces the model allow-list, `max_tokens` cap and request/response size limits.
 - Conversations and run checkpoints are stored only in the user's browser (localStorage). Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
 

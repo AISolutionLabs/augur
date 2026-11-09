@@ -37,6 +37,9 @@ export interface McpServerConfig {
   headerName?: string;
   requireApproval?: boolean;
   allowedTools?: string[];
+  readOnlyTools?: string[];
+  trustReadOnlyHints?: boolean;
+  writeRole?: 'Viewer' | 'Editor' | 'Admin';
 }
 
 export interface ClaudeSecureJsonData {

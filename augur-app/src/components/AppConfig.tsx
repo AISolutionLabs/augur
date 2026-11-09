@@ -213,6 +213,15 @@ export default function AppConfig({ plugin }: Props) {
             <Field label="Sub-agents in investigations" description="Lets investigations fan out to parallel specialist agents (more coverage, more tokens).">
               <InlineSwitch value={settings.enableSubAgents !== false} onChange={(e) => patch({ enableSubAgents: e.currentTarget.checked })} />
             </Field>
+            <Field label="Token limit per run" description="Input + output + cache writes (cache reads count 10%), including sub-agents. When reached, Augur stops querying and answers from what it has. Default 1,500,000.">
+              <Input
+                type="number"
+                width={20}
+                placeholder="1500000"
+                value={settings.maxTokensPerRun ?? ''}
+                onChange={(e) => patch({ maxTokensPerRun: Number(e.currentTarget.value) || undefined })}
+              />
+            </Field>
             <Field label="Tool budget per turn (chat / investigation)">
               <Stack gap={1}>
                 <Input type="number" width={12} placeholder="15" value={settings.stepBudget?.chat ?? ''} onChange={(e) => patch({ stepBudget: { ...settings.stepBudget, chat: Number(e.currentTarget.value) || undefined } })} />

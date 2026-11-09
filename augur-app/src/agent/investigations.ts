@@ -1,7 +1,7 @@
 // Saving an investigation into Grafana as a regular dashboard: shareable, permissioned by folder,
 // searchable (tag), versioned, and readable later by Augur itself as "investigation memory".
 
-import { DataSourceInfo, Finding, GrafanaHttp, Hypothesis } from './types';
+import { DataSourceInfo, EvidenceRecord, Finding, GrafanaHttp, Hypothesis } from './types';
 import { iso } from './time';
 
 export const INVESTIGATION_TAG = 'augur-investigation';
@@ -19,6 +19,8 @@ export interface InvestigationRecord {
   findings: Finding[];
   hypotheses: Hypothesis[];
   evidence: EvidenceQuery[];
+  /** Exact queries executed, with absolute ranges and result digests. */
+  ledger?: EvidenceRecord[];
   range: { from: number; to: number };
   user?: string;
   tags?: string[];
@@ -80,6 +82,24 @@ export function evidencePanels(evidence: EvidenceQuery[], datasources: DataSourc
   return panels;
 }
 
+const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+/** Markdown table of the evidence ledger (shared by saved investigations and exported reports). */
+export function ledgerMarkdown(ledger: EvidenceRecord[] = []): string {
+  if (!ledger.length) {
+    return '_No data queries were recorded._';
+  }
+  const q = (e: EvidenceRecord) => String(e.query.expr ?? e.query.query ?? JSON.stringify(e.query));
+  return [
+    '| ID | Datasource | Query | Range (UTC) | Result | Digest |',
+    '|---|---|---|---|---|---|',
+    ...ledger.map(
+      (e) =>
+        `| ${e.id}${e.agent ? ` (${e.agent})` : ''} | ${cell(e.datasource.name)} (\`${e.datasource.uid}\`) | \`${cell(q(e)).slice(0, 300)}\` | ${e.from} → ${e.to} | ${e.frames} frames, ${e.rows} rows | \`${e.digest.slice(0, 23)}…\` |`
+    ),
+  ].join('\n');
+}
+
 export function buildInvestigationDashboard(rec: InvestigationRecord, datasources: DataSourceInfo[]) {
   const sev = { critical: 0, high: 1, medium: 2, low: 3, info: 4 } as const;
   const findingsMd = rec.findings.length
@@ -96,8 +116,9 @@ export function buildInvestigationDashboard(rec: InvestigationRecord, datasource
     { id: 1, type: 'text', title: 'Report', gridPos: { x: 0, y: 0, w: 24, h: 18 }, options: { mode: 'markdown', content: `${header}\n\n${rec.report}` } },
     { id: 2, type: 'text', title: 'Findings', gridPos: { x: 0, y: 18, w: 12, h: 10 }, options: { mode: 'markdown', content: findingsMd } },
     { id: 3, type: 'text', title: 'Hypotheses', gridPos: { x: 12, y: 18, w: 12, h: 10 }, options: { mode: 'markdown', content: hypMd } },
-    { id: 4, type: 'row', title: 'Evidence', collapsed: false, gridPos: { x: 0, y: 28, w: 24, h: 1 }, panels: [] },
-    ...evidencePanels(rec.evidence, datasources, 29),
+    { id: 5, type: 'text', title: 'Evidence ledger (exact queries, ranges and result digests)', gridPos: { x: 0, y: 28, w: 24, h: 10 }, options: { mode: 'markdown', content: ledgerMarkdown(rec.ledger) } },
+    { id: 4, type: 'row', title: 'Evidence', collapsed: false, gridPos: { x: 0, y: 38, w: 24, h: 1 }, panels: [] },
+    ...evidencePanels(rec.evidence, datasources, 39),
   ];
   return {
     id: null,

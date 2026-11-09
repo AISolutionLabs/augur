@@ -36,6 +36,8 @@ export interface RunOptions {
   beforeFinish?: () => string | undefined;
   /** Optional nudge appended to a batch of tool results (e.g. investigation state reminders). */
   afterTools?: (toolNames: string[]) => string | undefined;
+  /** Returns a reason when the run's token budget is exhausted; the loop then finishes up. */
+  budgetExceeded?: () => string | undefined;
 }
 
 /** Runs the tool-use loop until the model stops calling tools. Returns the updated conversation. */
@@ -114,11 +116,16 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
 
     const results = await runTools(toolUses, byName, ctx, onEvent, opts.toolConcurrency ?? 4);
     const userContent: ContentBlock[] = [...results];
-    const nudge = opts.afterTools?.(toolUses.map((u) => u.name));
-    if (nudge && steps < opts.maxSteps) {
+    const overBudget = !finalCall ? opts.budgetExceeded?.() : undefined;
+    if (overBudget) {
+      finalCall = true;
+      userContent.push({ type: 'text', text: `${overBudget} Do not call more tools. Give your best answer now from the evidence gathered, and say what you would check next.` });
+    }
+    const nudge = finalCall ? undefined : opts.afterTools?.(toolUses.map((u) => u.name));
+    if (nudge && steps < opts.maxSteps && !finalCall) {
       userContent.push({ type: 'text', text: nudge });
     }
-    if (steps >= opts.maxSteps) {
+    if (steps >= opts.maxSteps && !finalCall) {
       finalCall = true;
       userContent.push({
         type: 'text',
@@ -164,7 +171,24 @@ async function runTools(
         if (!tool) {
           throw new Error(`unknown tool ${u.name}`);
         }
-        output = clip(await tool.run((u.input ?? {}) as Record<string, any>, ctx));
+        // Per-call context: evidence recorded by this call is tagged with it, and its ids are
+        // appended to the result so the model can cite them (E#) in findings and the report.
+        const ids: string[] = [];
+        const callCtx: ToolContext = {
+          ...ctx,
+          currentTool: { name: u.name, id: u.id },
+          recordEvidence: ctx.recordEvidence
+            ? (e) => {
+                const id = ctx.recordEvidence!(e);
+                ids.push(id);
+                return id;
+              }
+            : undefined,
+        };
+        output = clip(await tool.run((u.input ?? {}) as Record<string, any>, callCtx));
+        if (ids.length) {
+          output += `\n[evidence ${ids.join(', ')}]`;
+        }
       } catch (e) {
         ok = false;
         output = `Error: ${errorMessage(e)}`;

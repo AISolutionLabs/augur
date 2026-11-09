@@ -256,6 +256,31 @@ function McpSection({ options, onOptionsChange }: Props) {
           <Field label="Allowed tools" description="Optional glob patterns, e.g. get_*, search_*. Empty = all tools.">
             <TagsInput tags={srv.allowedTools ?? []} onChange={(tags) => set(i, { allowedTools: tags })} width={60} />
           </Field>
+          <Field
+            label="Read-only tools"
+            description="Glob patterns of tools you vouch for as read-only. They run without per-call approval, are available to sub-agents and need only Viewer."
+          >
+            <TagsInput tags={srv.readOnlyTools ?? []} onChange={(tags) => set(i, { readOnlyTools: tags })} width={60} />
+          </Field>
+          <Field label="Role required for other tools" description="Enforced by the backend for every call, independently of the approval prompt">
+            <RadioButtonGroup
+              options={[
+                { label: 'Viewer', value: 'Viewer' },
+                { label: 'Editor', value: 'Editor' },
+                { label: 'Admin', value: 'Admin' },
+              ]}
+              value={srv.writeRole ?? 'Editor'}
+              onChange={(v) => set(i, { writeRole: v as McpServerConfig['writeRole'] })}
+            />
+          </Field>
+          <Stack direction="row" gap={2} alignItems="center">
+            <InlineSwitch
+              label="Trust the server's readOnlyHint annotations"
+              showLabel
+              value={!!srv.trustReadOnlyHints}
+              onChange={(e) => set(i, { trustReadOnlyHints: e.currentTarget.checked })}
+            />
+          </Stack>
           <Stack direction="row" gap={2} alignItems="center">
             <InlineSwitch
               label="Ask before running tools not marked read-only"

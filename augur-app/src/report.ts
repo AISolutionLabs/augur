@@ -1,4 +1,5 @@
-import { Finding } from './agent/types';
+import { EvidenceRecord, Finding } from './agent/types';
+import { ledgerMarkdown } from './agent/investigations';
 import { iso } from './agent/time';
 
 export interface ReportInput {
@@ -8,6 +9,7 @@ export interface ReportInput {
   finalAnswer: string;
   findings: Finding[];
   queries: Array<{ label: string; ok: boolean }>;
+  ledger?: EvidenceRecord[];
   user?: string;
   generatedAt: number;
 }
@@ -36,6 +38,9 @@ export function buildReport(r: ReportInput): string {
         }
       });
     lines.push('');
+  }
+  if (r.ledger?.length) {
+    lines.push('## Evidence ledger', '', ledgerMarkdown(r.ledger), '');
   }
   if (r.queries.length) {
     lines.push('## Queries executed', '');

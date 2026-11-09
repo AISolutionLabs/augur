@@ -93,6 +93,22 @@ export interface ApprovalRequest {
   detail: string;
 }
 
+/** One executed data query, recorded so findings can be reproduced and verified later. */
+export interface EvidenceRecord {
+  id: string; // E1, E2, … (stable within a session)
+  tool: string;
+  toolUseId?: string;
+  agent?: string;
+  datasource: { uid: string; type: string; name: string };
+  query: Record<string, unknown>;
+  from: string; // absolute ISO time range actually queried
+  to: string;
+  digest: string; // "sha256:<hex>" of the raw response (or "fnv1a:" where WebCrypto is unavailable)
+  frames: number;
+  rows: number;
+  at: number;
+}
+
 export interface Hypothesis {
   id: string;
   statement: string;
@@ -120,6 +136,10 @@ export interface ToolContext {
   confirm?: (r: ApprovalRequest) => Promise<boolean>;
   /** Name of the sub-agent running this tool, if any. */
   agent?: string;
+  /** Evidence ledger sink; returns the assigned evidence id. */
+  recordEvidence?: (e: Omit<EvidenceRecord, 'id'>) => string;
+  /** Set by the runner for the duration of one tool call. */
+  currentTool?: { name: string; id: string };
 }
 
 export interface Finding {

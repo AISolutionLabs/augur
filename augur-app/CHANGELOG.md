@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Evidence ledger: every data query is recorded with datasource, query, absolute time range, SHA-256 digest of the response and frame/row counts; tool results carry evidence ids (`E3`) that findings cite; the ledger is saved with investigations (new dashboard panel) and exported reports.
+- Per-run token ceiling (`maxTokensPerRun`, default 1.5M effective tokens, sub-agents included): when reached the run stops querying and answers from what it has.
+- Multi-tab safety: a run lease ensures only one tab drives a session; other tabs show *Running in another tab*, can't resume or send, and take over if the owner tab goes away.
+- MCP tools are treated as read-only only when the datasource admin says so (`augurReadOnly` from the backend); MCP servers' own `readOnlyHint` is no longer trusted.
+- Prompts: findings must cite evidence ids; summaries can hide rare events, so query directly for them.
+- New SECURITY.md describing trust boundaries, what is enforced where, prompt-injection stance and reporting.
+
 ## 1.2.0
 
 - Durable runs: the agent runs outside React, so investigations survive closing the sidebar and navigating Grafana; transcript checkpointed after every step with **Resume** after reload or crash; transient gateway errors retried with backoff; leave-page confirmation while running.

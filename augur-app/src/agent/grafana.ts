@@ -2,6 +2,26 @@
 
 import { DataSourceInfo, ToolContext } from './types';
 import { DsQueryResponse } from './frames';
+import { iso } from './time';
+
+/** SHA-256 hex digest via WebCrypto, with an explicit non-cryptographic fallback. */
+export async function digest(text: string): Promise<string> {
+  const subtle = (globalThis as any).crypto?.subtle;
+  if (subtle && typeof TextEncoder !== 'undefined') {
+    try {
+      const buf = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return 'sha256:' + Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+    } catch {
+      // fall through
+    }
+  }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return 'fnv1a:' + (h >>> 0).toString(16).padStart(8, '0');
+}
 
 export const PROM_TYPES = ['prometheus']; // Mimir, Cortex and Thanos all use the prometheus datasource type
 export const LOKI_TYPES = ['loki'];
@@ -29,7 +49,7 @@ export async function dsQuery(
   query: Record<string, unknown>,
   range: { from: number; to: number }
 ): Promise<DsQueryResponse> {
-  return ctx.http.post<DsQueryResponse>(
+  const resp = await ctx.http.post<DsQueryResponse>(
     '/api/ds/query',
     {
       queries: [{ refId: 'A', datasource: { uid: ds.uid, type: ds.type }, ...query }],
@@ -38,6 +58,23 @@ export async function dsQuery(
     },
     ctx.signal
   );
+  if (ctx.recordEvidence) {
+    const frames = resp?.results?.A?.frames ?? [];
+    ctx.recordEvidence({
+      tool: ctx.currentTool?.name ?? 'query',
+      toolUseId: ctx.currentTool?.id,
+      agent: ctx.agent,
+      datasource: { uid: ds.uid, type: ds.type, name: ds.name },
+      query,
+      from: iso(range.from),
+      to: iso(range.to),
+      digest: await digest(JSON.stringify(resp ?? null)),
+      frames: frames.length,
+      rows: frames.reduce((n, f) => n + ((f.data?.values?.[0] as unknown[] | undefined)?.length ?? 0), 0),
+      at: ctx.now(),
+    });
+  }
+  return resp;
 }
 
 /** GET against a datasource's resource API (label/metric discovery). */

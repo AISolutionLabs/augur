@@ -63,6 +63,9 @@ func NewDatasource(ctx context.Context, instance backend.DataSourceInstanceSetti
 	if cErr != nil {
 		return nil, fmt.Errorf("http client: %w", cErr)
 	}
+	// Never follow redirects: Go only strips Authorization/Cookie on cross-host redirects, so
+	// x-api-key, api-key and custom MCP headers would be re-sent to the redirect target.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	ds.client = client
 	ds.mcp = newMCPClient(client)
 

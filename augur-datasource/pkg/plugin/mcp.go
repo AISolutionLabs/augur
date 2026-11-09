@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/AISolutionLabs/augur/augur-datasource/pkg/models"
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
 
 // Minimal MCP client for the streamable HTTP transport (JSON-RPC 2.0 over POST; responses as
@@ -400,6 +401,47 @@ func (c *mcpClient) call(ctx context.Context, srv models.MCPServer, auth http.He
 	return nil, fmt.Errorf("MCP server %q session could not be re-established", srv.Name)
 }
 
+// toolReadOnly reports whether a tool is read-only under the admin's policy: listed in ReadOnlyTools,
+// or annotated readOnlyHint by the server when the admin chose to trust those hints.
+func toolReadOnly(srv models.MCPServer, raw json.RawMessage) bool {
+	var meta struct {
+		Name        string `json:"name"`
+		Annotations struct {
+			ReadOnlyHint *bool `json:"readOnlyHint"`
+		} `json:"annotations"`
+	}
+	_ = json.Unmarshal(raw, &meta)
+	for _, pat := range srv.ReadOnlyTools {
+		if ok, _ := path.Match(pat, meta.Name); ok {
+			return true
+		}
+	}
+	return srv.TrustReadOnlyHints && meta.Annotations.ReadOnlyHint != nil && *meta.Annotations.ReadOnlyHint
+}
+
+// withPolicy adds Augur's effective read-only decision to each tool for the UI ("augurReadOnly").
+func withPolicy(srv models.MCPServer, tools []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(tools))
+	for _, t := range tools {
+		var m map[string]any
+		if err := json.Unmarshal(t, &m); err != nil {
+			continue
+		}
+		m["augurReadOnly"] = toolReadOnly(srv, t)
+		b, _ := json.Marshal(m)
+		out = append(out, b)
+	}
+	return out
+}
+
+func toolName(raw json.RawMessage) string {
+	var meta struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(raw, &meta)
+	return meta.Name
+}
+
 func toolAllowed(srv models.MCPServer, name string) bool {
 	if len(srv.AllowedTools) == 0 {
 		return true
@@ -567,7 +609,7 @@ func (d *Datasource) handleMCPTools(w http.ResponseWriter, r *http.Request) {
 				var tools []json.RawMessage
 				tools, entry.Warning, err = d.mcp.listTools(ctx, srv, auth)
 				if tools != nil {
-					entry.Tools = tools
+					entry.Tools = withPolicy(srv, tools)
 				}
 				if entry.Warning != "" {
 					d.logger.Warn("MCP tool list capped", "server", srv.Name, "warning", entry.Warning)
@@ -615,6 +657,38 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
+	// Authorization is enforced here, not in the browser: the tool must be one the server offers to
+	// this identity, and tools that are not read-only (by admin policy) need the configured role.
+	// The UI approval prompt protects against the model acting on injected instructions; this check
+	// protects against anyone calling the endpoint directly.
+	listCtx, cancelList := context.WithTimeout(r.Context(), 20*time.Second)
+	tools, _, lerr := d.mcp.listTools(listCtx, srv, auth)
+	cancelList()
+	if lerr != nil {
+		writeError(w, http.StatusBadGateway, lerr.Error())
+		return
+	}
+	var tool json.RawMessage
+	for _, t := range tools {
+		if toolName(t) == in.Tool {
+			tool = t
+			break
+		}
+	}
+	if tool == nil {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("tool %q is not offered by MCP server %q", in.Tool, in.Server))
+		return
+	}
+	readOnly := toolReadOnly(srv, tool)
+	role := ""
+	login := ""
+	if u := backend.PluginConfigFromContext(r.Context()).User; u != nil {
+		role, login = u.Role, u.Login
+	}
+	if !readOnly && models.RoleRank(role) < models.RoleRank(srv.RequiredWriteRole()) {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("tool %q on MCP server %q can change state and requires the %s role", in.Tool, in.Server, srv.RequiredWriteRole()))
+		return
+	}
 	args := in.Arguments
 	if len(args) == 0 || string(args) == "null" {
 		args = json.RawMessage(`{}`)
@@ -626,7 +700,7 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	d.logger.Info("MCP tool call", "server", srv.Name, "tool", in.Tool)
+	d.logger.Info("MCP tool call", "server", srv.Name, "tool", in.Tool, "readOnly", readOnly, "user", login)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(res)
 }

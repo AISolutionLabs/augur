@@ -8,7 +8,7 @@
 
 import { config } from '@grafana/runtime';
 
-import { AgentEvent, AgentMode, ContentBlock, Finding, Hypothesis, Message, ToolUseBlock, Usage } from '../agent/types';
+import { AgentEvent, AgentMode, ContentBlock, EvidenceRecord, Finding, Hypothesis, Message, ToolUseBlock, Usage } from '../agent/types';
 import { runAgent } from '../agent/runner';
 import { buildSystemPrompt, conclusionGate, resolveTimezone, stateReminder } from '../agent/prompts';
 import { buildToolset } from '../agent/tools';
@@ -17,7 +17,7 @@ import { Proposal } from '../agent/proposals';
 import { saveInvestigation as saveInvestigationApi } from '../agent/investigations';
 import { ClaudeDsConfig, datasourceModelCaller, getClaudeConfig, grafanaHttp, listClaudeDataSources, listDataSources } from '../api';
 import { STEP_BUDGET } from '../constants';
-import { AugurSettings, loadPersonalRules, loadSettings, Skill } from '../settings';
+import { AugurSettings, DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens, loadPersonalRules, loadSettings, Skill } from '../settings';
 import { Item, loadCurrent, loadHistory, newSession, persist, SessionState, setCurrent, deleteSession } from './history';
 
 export const RANGE_MS: Record<string, number> = { '15m': 9e5, '1h': 36e5, '3h': 108e5, '6h': 216e5, '12h': 432e5, '24h': 864e5, '2d': 1728e5, '7d': 6048e5 };
@@ -26,6 +26,8 @@ const ZERO_USAGE: Required<Usage> = { input_tokens: 0, output_tokens: 0, cache_r
 
 export interface StoreState {
   ready: boolean;
+  /** Another browser tab currently holds the run lease for this session. */
+  runningElsewhere: boolean;
   claudeDs: Array<{ uid: string; name: string; type: string; isDefault?: boolean }>;
   dsUid?: string;
   dsConfig?: ClaudeDsConfig;
@@ -100,6 +102,33 @@ export function canResume(messages: Message[]): boolean {
 
 type Listener = () => void;
 
+// ---- run lease (one tab runs a session at a time) -------------------------------
+
+const LEASE_KEY = 'augur-assistant-app/lease';
+export const LEASE_HEARTBEAT_MS = 3_000;
+export const LEASE_TTL_MS = 12_000;
+
+interface Lease {
+  sessionId: string;
+  tabId: string;
+  heartbeat: number;
+}
+
+function readLease(): Lease | undefined {
+  try {
+    const raw = localStorage.getItem(LEASE_KEY);
+    return raw ? (JSON.parse(raw) as Lease) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A lease held by some other tab that is still heartbeating. */
+export function liveLeaseElsewhere(sessionId: string, tabId: string, now = Date.now()): boolean {
+  const l = readLease();
+  return !!l && l.sessionId === sessionId && l.tabId !== tabId && now - l.heartbeat < LEASE_TTL_MS;
+}
+
 class AugurStore {
   private state: StoreState;
   private listeners = new Set<Listener>();
@@ -110,17 +139,27 @@ class AugurStore {
   private initStarted = false;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private unloadHooked = false;
+  private readonly tabId = `t-${Math.random().toString(36).slice(2, 10)}`;
+  private heartbeat: ReturnType<typeof setInterval> | undefined;
+  private watcher: ReturnType<typeof setInterval> | undefined;
 
   constructor() {
     const cur = loadCurrent();
     let session = cur ?? newSession();
-    // A run that was in progress when the page went away is now interrupted.
+    let runningElsewhere = false;
     if (session.run?.status === 'running') {
-      session = { ...session, run: { ...session.run, status: 'interrupted', interruptedAt: session.updatedAt } };
-      persist(session);
+      if (liveLeaseElsewhere(session.id, this.tabId)) {
+        // Another tab is actively running this session: follow it instead of declaring it interrupted.
+        runningElsewhere = true;
+      } else {
+        // The run's tab went away without finishing: it is interrupted and can be resumed here.
+        session = { ...session, run: { ...session.run, status: 'interrupted', interruptedAt: session.updatedAt } };
+        persist(session);
+      }
     }
     this.hypotheses = session.hypotheses;
     this.state = {
+      runningElsewhere,
       ready: false,
       claudeDs: [],
       settings: {},
@@ -181,6 +220,7 @@ class AugurStore {
     }
     this.initStarted = true;
     this.hookUnload();
+    this.watchOtherTab();
     const claudeDs = listClaudeDataSources();
     const dsUid = claudeDs.find((d) => d.isDefault)?.uid ?? claudeDs[0]?.uid;
     this.set({ claudeDs, dsUid, ready: true });
@@ -190,11 +230,67 @@ class AugurStore {
     }
   }
 
+  /** Keeps a tab that follows another tab's run in sync, and takes over if that tab dies. */
+  private watchOtherTab() {
+    clearInterval(this.watcher);
+    if (!this.state.runningElsewhere) {
+      return;
+    }
+    const refresh = () => {
+      const id = this.state.session.id;
+      const latest = loadHistory().find((x) => x.id === id);
+      if (liveLeaseElsewhere(id, this.tabId)) {
+        if (latest) {
+          this.hypotheses = latest.hypotheses;
+          this.set({ session: latest });
+        }
+        return;
+      }
+      clearInterval(this.watcher);
+      // The other tab finished (run cleared) or died (stale lease, run still marked running).
+      let next = latest ?? this.state.session;
+      if (next.run?.status === 'running') {
+        next = { ...next, run: { ...next.run, status: 'interrupted', interruptedAt: next.updatedAt } };
+        persist(next);
+      }
+      this.hypotheses = next.hypotheses;
+      this.set({ session: next, runningElsewhere: false, history: loadHistory() });
+    };
+    this.watcher = setInterval(refresh, LEASE_HEARTBEAT_MS);
+  }
+
+  private acquireLease(): boolean {
+    const id = this.state.session.id;
+    if (liveLeaseElsewhere(id, this.tabId)) {
+      return false;
+    }
+    const write = () => {
+      try {
+        localStorage.setItem(LEASE_KEY, JSON.stringify({ sessionId: id, tabId: this.tabId, heartbeat: Date.now() } satisfies Lease));
+      } catch {}
+    };
+    write();
+    clearInterval(this.heartbeat);
+    this.heartbeat = setInterval(write, LEASE_HEARTBEAT_MS);
+    return true;
+  }
+
+  private releaseLease() {
+    clearInterval(this.heartbeat);
+    const l = readLease();
+    if (l?.tabId === this.tabId) {
+      try {
+        localStorage.removeItem(LEASE_KEY);
+      } catch {}
+    }
+  }
+
   private hookUnload() {
     if (this.unloadHooked || typeof window === 'undefined') {
       return;
     }
     this.unloadHooked = true;
+    window.addEventListener('pagehide', () => this.releaseLease());
     window.addEventListener('beforeunload', (e) => {
       if (this.state.running) {
         persist(this.state.session);
@@ -280,7 +376,7 @@ class AugurStore {
   send = async (textIn: string, extra?: { context?: string; mode?: AgentMode; pageContext?: string }) => {
     const text = textIn.trim();
     const { dsUid } = this.state;
-    if (!text || this.state.running || !dsUid) {
+    if (!text || this.state.running || this.state.runningElsewhere || !dsUid) {
       return;
     }
     const mode = extra?.mode ?? this.state.session.mode;
@@ -314,6 +410,12 @@ class AugurStore {
     if (this.state.running || !s.run || !this.state.dsUid) {
       return;
     }
+    if (liveLeaseElsewhere(s.id, this.tabId)) {
+      // Another tab picked it up first.
+      this.set({ runningElsewhere: true });
+      this.watchOtherTab();
+      return;
+    }
     const transcript = prepareResume(s.messages, s.run.interruptedAt ?? s.updatedAt);
     this.pushItem({ kind: 'notice', text: 'Resumed from the last checkpoint.' });
     // Tools that were mid-flight when the page went away will never finish.
@@ -339,6 +441,11 @@ class AugurStore {
   private async run(transcript: Message[], mode: AgentMode, pageContext?: string) {
     const { dsUid, settings, mcp, model, dsConfig } = this.state;
     if (!dsUid) {
+      return;
+    }
+    if (!this.acquireLease()) {
+      this.set({ runningElsewhere: true });
+      this.watchOtherTab();
       return;
     }
     const ac = new AbortController();
@@ -378,6 +485,8 @@ class AugurStore {
       delegate: subAgents ? { call, model, maxTokens: dsConfig?.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent: this.onEvent } : undefined,
     });
 
+    const startTokens = effectiveTokens(this.state.usage);
+    const ceiling = settings.maxTokensPerRun ?? DEFAULT_MAX_TOKENS_PER_RUN;
     let completed = false;
     try {
       const messages = await runAgent({
@@ -393,6 +502,10 @@ class AugurStore {
         onProgress: (msgs) => this.updateSession((s) => ({ ...s, messages: [...msgs] }), true),
         beforeFinish: mode === 'investigate' ? () => conclusionGate(this.hypotheses) : undefined,
         afterTools: mode === 'investigate' ? stateReminder() : undefined,
+        budgetExceeded: () => {
+          const used = effectiveTokens(this.state.usage) - startTokens;
+          return used > ceiling ? `Token budget for this run is used up (${Math.round(used / 1000)}k of ${Math.round(ceiling / 1000)}k).` : undefined;
+        },
         ctx: {
           http: grafanaHttp,
           listDataSources: () => datasources,
@@ -400,6 +513,11 @@ class AugurStore {
           now: () => Date.now(),
           signal: ac.signal,
           propose,
+          recordEvidence: (e: Omit<EvidenceRecord, 'id'>) => {
+            const id = `E${(this.state.session.evidence?.length ?? 0) + 1}`;
+            this.updateSession((s) => ({ ...s, evidence: [...(s.evidence ?? []), { ...e, id }] }));
+            return id;
+          },
           recordFinding: (f: Finding) => this.updateSession((s) => ({ ...s, findings: [...s.findings, f], items: [...s.items, { kind: 'finding', finding: f }] })),
           updateHypothesis: (h: Hypothesis) => {
             this.hypotheses = [...this.hypotheses.filter((x) => x.id !== h.id), h];
@@ -422,6 +540,7 @@ class AugurStore {
       this.updateSession((s) => ({ ...s, messages }));
     } finally {
       this.abort = null;
+      this.releaseLease();
       this.set({ running: false, status: '' });
       this.updateSession(
         (s) => ({
@@ -454,13 +573,20 @@ class AugurStore {
 
   stop = () => this.abort?.abort();
 
+  /** Stops timers (tests and hot reload). */
+  dispose() {
+    clearInterval(this.heartbeat);
+    clearInterval(this.watcher);
+  }
+
   reset = () => {
     this.abort?.abort();
     this.pendingNotes = [];
     this.hypotheses = [];
     const s = newSession(this.state.session.mode, this.state.session.rangeKey);
     setCurrent(undefined);
-    this.set({ session: s, usage: ZERO_USAGE, history: loadHistory() });
+    clearInterval(this.watcher);
+    this.set({ session: s, usage: ZERO_USAGE, history: loadHistory(), runningElsewhere: false });
   };
 
   open = (id: string) => {
@@ -468,8 +594,10 @@ class AugurStore {
     if (s) {
       this.abort?.abort();
       this.hypotheses = s.hypotheses;
-      this.set({ session: s });
+      const elsewhere = s.run?.status === 'running' && liveLeaseElsewhere(s.id, this.tabId);
+      this.set({ session: s, runningElsewhere: elsewhere });
       setCurrent(id);
+      this.watchOtherTab();
     }
   };
 
@@ -492,6 +620,7 @@ class AugurStore {
         findings: s.findings,
         hypotheses: s.hypotheses,
         evidence: s.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ tool: x.name, input: x.input as any, ok: x.status === 'ok' })),
+        ledger: s.evidence ?? [],
         range: { from: s.createdAt - (RANGE_MS[s.rangeKey] ?? 36e5), to: now },
         user: config.bootData?.user?.login,
       },
@@ -515,5 +644,6 @@ export function getStore(): AugurStore {
 /** Test helper: drops the singleton so each test starts from storage. */
 export function resetStoreForTests() {
   store?.stop();
+  store?.dispose();
   store = undefined;
 }

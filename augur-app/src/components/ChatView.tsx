@@ -129,6 +129,7 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
         finalAnswer: finalAnswer?.text ?? '',
         findings: session.findings,
         queries: session.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ label: x.label, ok: x.status === 'ok' })),
+        ledger: session.evidence,
         user: config.bootData?.user?.login,
         generatedAt: now,
       })
@@ -208,6 +209,11 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
               <Icon name={m.error ? 'exclamation-triangle' : 'info-circle'} /> MCP server <b>{m.name}</b>: {m.error ?? m.warning}
             </div>
           ))}
+        {s.runningElsewhere && (
+          <Alert severity="info" title="Running in another tab" data-testid="augur-elsewhere">
+            This conversation is being worked on in another browser tab. Progress appears here as it is saved; you can continue once it finishes.
+          </Alert>
+        )}
         {s.interrupted && (
           <Alert
             severity="warning"
@@ -318,7 +324,7 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                   Stop
                 </Button>
               ) : (
-                <Button icon={mode === 'investigate' ? 'search' : 'message'} onClick={() => submit()} disabled={!input.trim() || !s.dsConfig}>
+                <Button icon={mode === 'investigate' ? 'search' : 'message'} onClick={() => submit()} disabled={!input.trim() || !s.dsConfig || s.runningElsewhere}>
                   {mode === 'investigate' ? 'Investigate' : 'Send'}
                 </Button>
               )}
