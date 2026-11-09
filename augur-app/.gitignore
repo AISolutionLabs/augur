@@ -46,3 +46,4 @@ ci/
 .idea
 
 .eslintcache
+dist-headless/

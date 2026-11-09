@@ -7,3 +7,4 @@ coverage/
 .DS_Store
 __debug_bin*
 scripts/screenshots/out/
+bench/.o11y-bench/

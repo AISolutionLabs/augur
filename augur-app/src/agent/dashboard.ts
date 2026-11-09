@@ -43,6 +43,20 @@ export interface VariableSpec {
   include_all?: boolean;
 }
 
+/** Query annotation: events from a Loki or Prometheus query drawn as markers on every time series panel. */
+export interface AnnotationSpec {
+  name: string;
+  datasource_uid: string;
+  expr: string;
+  /** Loki: label or extracted field names whose values become annotation tags, comma separated. */
+  tag_keys?: string;
+  /** Marker title / text, e.g. "Deploy {{service}}" and "{{version}}" (labels or extracted fields). */
+  title_format?: string;
+  text_format?: string;
+  color?: string;
+  enabled?: boolean;
+}
+
 export interface DashboardSpec {
   title: string;
   description?: string;
@@ -51,6 +65,7 @@ export interface DashboardSpec {
   time_from?: string;
   refresh?: string;
   variables?: VariableSpec[];
+  annotations?: AnnotationSpec[];
   panels: PanelSpec[];
   extend_dashboard_uid?: string;
   check_queries?: boolean;
@@ -238,6 +253,47 @@ export function buildVariable(v: VariableSpec, all: DataSourceInfo[], warnings: 
   }
 }
 
+const BUILT_IN_ANNOTATION = {
+  builtIn: 1,
+  datasource: { type: 'grafana', uid: '-- Grafana --' },
+  enable: true,
+  hide: true,
+  iconColor: 'rgba(0, 211, 255, 1)',
+  name: 'Annotations & Alerts',
+  type: 'dashboard',
+};
+
+export function buildAnnotation(a: AnnotationSpec, all: DataSourceInfo[], warnings: string[]) {
+  const where = `annotation "${a.name}"`;
+  if (!a.expr) {
+    warnings.push(`${where}: expr is required`);
+  }
+  const ds = dsRefFor(a, all, warnings, where);
+  if (ds?.type && ds.type !== 'loki' && ds.type !== 'prometheus') {
+    warnings.push(`${where}: only Loki and Prometheus query annotations are supported (got ${ds.type})`);
+  }
+  const json: Record<string, any> = {
+    name: a.name,
+    datasource: ds,
+    enable: a.enabled !== false,
+    hide: false,
+    iconColor: a.color ?? 'rgba(255, 152, 48, 1)',
+    // Grafana reads the query from target (current) or the top-level fields (older versions).
+    expr: a.expr,
+    target: { refId: 'Anno', expr: a.expr },
+    titleFormat: a.title_format ?? '',
+    textFormat: a.text_format ?? '',
+    tagKeys: a.tag_keys ?? '',
+  };
+  if (ds?.type === 'loki') {
+    json.instant = false;
+  } else {
+    json.step = '60s';
+    json.useValueForTime = false;
+  }
+  return json;
+}
+
 /** Packs panels left-to-right into a 24-column grid, grouped under rows. Returns next free y. */
 export function layout(panels: Array<{ spec: PanelSpec; json: Record<string, any> }>, startY: number, nextId: () => number) {
   const out: Array<Record<string, any>> = [];
@@ -374,6 +430,7 @@ export async function buildDashboardDraft(spec: DashboardSpec, ctx: ToolContext)
   const { panels } = layout(built, startY, nextId);
 
   const variables = (spec.variables ?? []).map((v) => buildVariable(v, all, warnings));
+  const annotations = (spec.annotations ?? []).map((a) => buildAnnotation(a, all, warnings));
   const varNames = new Set(variables.map((v) => v.name));
   const referenced = JSON.stringify(spec.panels).match(/\$\{?(\w+)/g) ?? [];
   for (const r of referenced) {
@@ -394,6 +451,7 @@ export async function buildDashboardDraft(spec: DashboardSpec, ctx: ToolContext)
         tags: [...new Set([...(base.tags ?? []), ...(spec.tags ?? []), 'claude'])],
         panels: [...(base.panels ?? []), ...panels],
         templating: { list: [...(base.templating?.list ?? []), ...variables.filter((v) => !(base!.templating?.list ?? []).some((b: any) => b.name === v.name))] },
+        annotations: { list: [...(base.annotations?.list ?? [BUILT_IN_ANNOTATION]), ...annotations] },
       }
     : {
         id: null,
@@ -409,19 +467,7 @@ export async function buildDashboardDraft(spec: DashboardSpec, ctx: ToolContext)
         time: { from: spec.time_from ?? 'now-6h', to: 'now' },
         refresh: spec.refresh ?? '',
         templating: { list: variables },
-        annotations: {
-          list: [
-            {
-              builtIn: 1,
-              datasource: { type: 'grafana', uid: '-- Grafana --' },
-              enable: true,
-              hide: true,
-              iconColor: 'rgba(0, 211, 255, 1)',
-              name: 'Annotations & Alerts',
-              type: 'dashboard',
-            },
-          ],
-        },
+        annotations: { list: [BUILT_IN_ANNOTATION, ...annotations] },
         panels,
       };
 

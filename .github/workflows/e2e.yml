@@ -1,0 +1,54 @@
+name: E2E
+
+# Real Grafana 13 + Prometheus/Loki/Tempo (o11y-bench stack with seeded incident data), the Augur
+# plugins built from this commit, and a scripted stub model. Headless runs (model direct and
+# through the Augur datasource backend) and a browser run of the app page.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: augur-app/.nvmrc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: augur-datasource/go.mod
+          cache-dependency-path: augur-datasource/go.sum
+      - name: Build app and headless runner
+        working-directory: augur-app
+        run: npm ci && npm run build && npm run build:headless
+      - name: Build datasource
+        working-directory: augur-datasource
+        run: npm ci && npm run build
+      - name: Build datasource backend (linux/amd64)
+        uses: magefile/mage-action@v3
+        with:
+          version: latest
+          args: -v build:linux
+          workdir: augur-datasource
+      - name: Run e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          SCREENSHOT: ${{ github.workspace }}/e2e/e2e-ui.png
+        run: E2E_KEEP=1 e2e/run.sh
+      - name: Grafana logs
+        if: failure()
+        working-directory: e2e
+        run: docker compose logs --tail 300 stack stub || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-ui-screenshot
+          path: e2e/e2e-ui.png
+          if-no-files-found: ignore

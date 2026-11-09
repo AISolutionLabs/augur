@@ -1,8 +1,8 @@
 # Augur
 
-**AI investigations for Grafana, powered by Claude.**
+**The self-hosted AI assistant for Grafana: your model, your network, no Grafana Cloud.**
 
-Augur adds a Claude-powered observability engineer to self-hosted Grafana (OSS or Enterprise, **12.0+**). It is docked on every page and can:
+Augur adds a Claude-powered observability engineer to self-hosted Grafana (OSS or Enterprise, **12.0+**). It runs entirely inside your Grafana and talks only to the model gateway you choose (LiteLLM, Bedrock behind a gateway, or the Anthropic API). There is no Grafana Cloud account, no third-party backend and no per-seat fee. It is docked on every page and can:
 
 - **Chat** about your metrics, logs, traces, profiles, dashboards and alerts, with an Explore link behind every claim.
 - **Investigate** incidents end to end: parallel specialist sub-agents work across Mimir/Prometheus, Loki, Tempo, Pyroscope, alert rules, state history and deploy annotations. A hypothesis board tracks candidate causes, and the leading one is deliberately challenged before Augur concludes. The result is a root-cause report you can save to Grafana.
@@ -34,25 +34,27 @@ Open http://localhost:3000 (admin/admin) → **Augur**, and ask *"What's the slo
 
 ## Augur and Grafana Assistant
 
-Grafana Assistant is Grafana Labs' commercial agent. On self-managed Grafana it runs through a Grafana Cloud stack, which provides its backend, limits and billing. Grafana's documentation lists Investigations, infrastructure memory, Automations and the Slack integration as *not available* on self-managed Grafana ([docs](https://grafana.com/docs/grafana/latest/ai-tools/grafana-assistant/self-managed/)).
+Grafana Assistant is Grafana Labs' commercial agent. Since April 2026 OSS and Enterprise users can use it too, by connecting their Grafana to a Grafana Cloud stack: the stack provides the backend, limits and billing, and prompts plus query context are processed there. Its self-managed documentation requires Grafana 13.1+ and lists Investigations, investigation and Knowledge Graph memory, Automations and the Slack integration as *not available* ([docs](https://grafana.com/docs/grafana/latest/ai-tools/grafana-assistant/self-managed/), checked November 2026).
 
 | Capability on self-managed Grafana | Grafana Assistant (on-prem) | Augur |
 |---|---|---|
+| Requires | Grafana 13.1+ and a Grafana Cloud stack | Grafana 12.0+ and a Claude-compatible model endpoint |
 | Chat, query writing and explanation, navigation | ✓ | ✓ (with Explore/dashboard/alert links) |
 | Create dashboards | ✓ | ✓ (queries dry-run before you see the draft) |
 | Edit existing dashboards | ✓ | ✓ (change list, version-guarded apply, rollback via version history) |
 | Rules and skills | ✓ | ✓ (also provisionable from Git; `/commands`) |
 | MCP server integrations | ✓ | ✓ (proxied server-side; approval for non-read-only tools) |
 | Investigations | ✗ (Cloud only) | ✓ (sub-agents, hypothesis board, challenge step, saved reports) |
-| Infrastructure memory | ✗ (Cloud only) | ✓ (scan of metrics/logs/traces + Tempo service graph) |
+| Infrastructure / knowledge memory | ✗ (Cloud only) | ✓ (scan of metrics/logs/traces + Tempo service graph) |
 | Alerting actions | silences and routing (per Grafana Cloud guides) | draft silences (with live match preview) and alert rules |
 | Profiles (Pyroscope) | not listed for self-managed | ✓ |
 | Automations / scheduled runs, Slack | ✗ (Cloud only) | not yet (roadmap) |
-| Where data and prompts go | your Grafana ↔ Grafana Cloud ↔ LLM provider | your Grafana ↔ **your** gateway |
+| Where prompts and query context go | Grafana Cloud backend (stack region) ↔ LLM provider | your Grafana ↔ **your** gateway |
 | Model / identity | Grafana-managed | your choice; per-user OAuth possible |
-| Cost | per-user Grafana Cloud pricing | open source (MIT) + your model usage |
+| Cost | Grafana Cloud Assistant pricing, per connected stack | open source (MIT) + your model usage |
+| Benchmark | Grafana's [o11y-bench](https://o11ybench.ai/) | runs on o11y-bench with its own tools ([how](#benchmark)) |
 
-Grafana Assistant has more polish and integrations inside Grafana Cloud. Augur aims to make self-hosted Grafana self-sufficient.
+Grafana Assistant has more polish and integrations inside Grafana Cloud. Augur is for teams that need the assistant to stay inside their own network and identity boundary.
 
 ---
 
@@ -93,7 +95,7 @@ There are two plugins because Grafana only forwards a user's OAuth token to *dat
 | Grafana | `run_panel_queries`, `list_alerts`, `alert_state_history`, `get_annotations`, `list_silences` |
 | Knowledge | `search_skills`, `read_skill`, `search_past_investigations`, `read_past_investigation` |
 | Investigation | `delegate` (parallel sub-agents), `update_hypothesis`, `record_finding` |
-| Proposals (user applies) | `draft_dashboard`, `propose_dashboard_edit`, `draft_silence`, `draft_alert_rule` |
+| Proposals (user applies) | `draft_dashboard`, `propose_dashboard_edit` (panels, variables, and query annotations such as deploy markers from logs), `draft_silence`, `draft_alert_rule` |
 | MCP | `mcp__<server>__<tool>` for every tool your MCP servers expose |
 
 ### How investigations work
@@ -268,10 +270,51 @@ apps:
 - A per-run token ceiling (default 1.5M, configurable) stops runaway loops; the run then answers from what it has.
 - Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions. This is a mitigation, not a guarantee; the structural controls above are what limit the impact of prompt injection.
 - With OAuth forwarding, Augur forwards the user's token; your gateway and MCP servers must validate issuer, audience and expiry.
-
-See [SECURITY.md](SECURITY.md) for the full trust model and how to report a vulnerability.
 - The backend accepts a fixed set of Messages API fields and enforces the model allow-list, `max_tokens` cap and request/response size limits.
 - Conversations and run checkpoints are stored only in the user's browser (localStorage). Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
+
+See [SECURITY.md](SECURITY.md) for the full trust model and how to report a vulnerability.
+
+---
+
+## Headless runner
+
+The same agent, tools and prompts can run outside the browser, against Grafana's HTTP API with a service-account token. It is used for the end-to-end tests and the benchmark, and works for scripted checks too:
+
+```bash
+cd augur-app && npm run build:headless
+GRAFANA_URL=https://grafana.example.com GRAFANA_TOKEN=glsa_... \
+MODEL_BASE_URL=https://litellm.example.internal MODEL_API_KEY=sk-... MODEL=claude-sonnet-5-5 \
+node dist-headless/augur-headless.mjs "Which service has the highest error rate in the last hour?"
+```
+
+| Variable | Meaning |
+|---|---|
+| `GRAFANA_URL`, `GRAFANA_TOKEN` (or `GRAFANA_USER`/`GRAFANA_PASSWORD`) | Grafana and the identity whose permissions apply |
+| `AUGUR_DATASOURCE_UID` | Call the model through an Augur datasource (its key/OAuth and guardrails), *or* |
+| `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL` | a Claude Messages endpoint directly (`/v1/messages` is appended); `MODEL_AUTH_HEADER=x-api-key` for Anthropic |
+| `AUGUR_MODE` | `chat` (default) or `investigate` (sub-agents, hypotheses, conclusion gate) |
+| `AUGUR_APPLY=auto` | Apply proposals automatically. **Off by default**; meant for unattended tests and benchmarks |
+| `AUGUR_TRAJECTORY`, `AUGUR_ANSWER` | Write the run as an ATIF trajectory (tool calls, results, evidence, usage) and the final answer |
+| `AUGUR_NOW` | Fixed "current time" for reproducible runs |
+
+## Testing
+
+- **Unit and UI tests** (`make test`): the agent and tools against a fake Grafana API; `ChatPage.test.tsx` drives the whole UI with a scripted model; Go tests cover both auth modes, the guardrails and an MCP server over JSON and SSE.
+- **End to end** (`make e2e`, and the [E2E workflow](.github/workflows/e2e.yml) on every push): a real Grafana 13 with Prometheus, Loki and Tempo preloaded with incident data (the o11y-bench stack), the plugins built from the commit, and a scripted stub model ([`e2e/`](e2e)). It checks that both plugins load and the datasource backend is healthy, then runs the headless agent twice (model called directly and through the datasource backend), asserting real query results, evidence ids, and a dashboard with panels and a Loki annotation saved in Grafana. Finally it opens the app in Chrome, sends a message and checks the run completes with a draft card and no errors. No model key is needed.
+
+## Benchmark
+
+[o11y-bench](https://github.com/grafana/o11y-bench) is Grafana Labs' open benchmark for observability agents: 64 tasks across PromQL, LogQL, TraceQL, Grafana API, dashboarding and incident investigation, graded on Grafana state and by a Claude judge. [`bench/o11y-bench`](bench/o11y-bench) runs Augur on it as a Harbor agent (Augur's own tools, not mcp-grafana) and, for comparison, the benchmark's default agent with the same model:
+
+```bash
+export ANTHROPIC_API_KEY=...                       # also used by the grader's judge
+export ANTHROPIC_BASE_URL=https://litellm.example  # optional: your gateway's /v1/messages
+bench/o11y-bench/run.sh anthropic/claude-sonnet-5-5 --task-name query-cpu-metrics --n-concurrent 1   # one task first
+bench/o11y-bench/run.sh anthropic/claude-sonnet-5-5                                                  # full run
+```
+
+Needs Docker, [mise](https://mise.jdx.dev/) and [uv](https://docs.astral.sh/uv/). Add `--ak mode=investigate` for investigation mode. Reports land in `bench/.o11y-bench/jobs/*/run_report.html`. Proposals are applied automatically in the benchmark, because dashboard tasks are graded on what is saved.
 
 ---
 
@@ -287,7 +330,7 @@ deploy/             # docker-compose demo with grafana/otel-lgtm
 make install && make lint && make test && make package
 ```
 
-The agent is UI-independent: tools take a `ToolContext` with an HTTP abstraction and are unit-tested against a fake Grafana API. `ChatPage.test.tsx` drives the whole UI with a scripted model (investigations, proposals, MCP approvals, history, sidebar). The Go tests cover both auth modes, the guardrails and an MCP server over JSON and SSE.
+The agent is UI-independent: tools take a `ToolContext` with an HTTP abstraction, which is why the same code runs in the app, the headless runner and the tests.
 
 ### Releasing
 
@@ -302,7 +345,7 @@ To sign, add the repository secret `GRAFANA_ACCESS_POLICY_TOKEN`. For a private 
 
 **Screenshots:** `cd scripts/screenshots && npm i && node build.mjs && node shoot.mjs` renders the real components with `@grafana/ui` against a scripted demo incident in headless Chrome and regenerates `docs/img`.
 
-**Signing:** `npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` (private signing). Community signing requires the ID prefix (`augur-`) to match your grafana.com org slug.
+**Signing:** `npx @grafana/sign-plugin@latest --rootUrls https://grafana.example.com` (private signing), or allow the unsigned plugins with `allow_loading_unsigned_plugins`.
 
 **Roadmap:** server-side runner for scheduled automations, alert-triggered and cross-device investigations; Slack; dashboard v2 schema editing; streaming responses.
 

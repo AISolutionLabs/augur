@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0
+
+- Headless runner (`npm run build:headless`): the same agent, tools and prompts outside the browser, against Grafana's HTTP API with a service-account token; model through an Augur datasource or a Messages endpoint directly; ATIF trajectory output; proposals applied only with `AUGUR_APPLY=auto`.
+- End-to-end tests on every push: real Grafana 13 + Prometheus/Loki/Tempo with incident data, the built plugins and a scripted stub model; headless runs (direct and through the datasource backend) and a Chrome run of the app page (`make e2e`).
+- o11y-bench support: run Augur on Grafana's open observability-agent benchmark next to its default agent (`bench/o11y-bench/run.sh`).
+- Dashboards: query annotations (Loki or Prometheus, e.g. deployment markers with version text) in new dashboards (`annotations`) and edits (`add_annotations`).
+- Proposal apply logic shared between the UI and the headless runner.
+- README: leads with fully self-hosted / own model / no Grafana Cloud; comparison updated for Grafana Assistant on self-managed Grafana (requires a Grafana Cloud stack, Grafana 13.1+).
+
 ## 1.3.0
 
 - Evidence ledger: every data query is recorded with datasource, query, absolute time range, SHA-256 digest of the response and frame/row counts; tool results carry evidence ids (`E3`) that findings cite; the ledger is saved with investigations (new dashboard panel) and exported reports.

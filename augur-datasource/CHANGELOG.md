@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.0
+
+- Covered by the new end-to-end tests: plugin loading on Grafana 13, health check and the Messages proxy path against a stub model.
+
 ## 1.3.0
 
 - **Security:** MCP authorization is now enforced server-side. Only tools in the server's current listing (and the allow-list) can be called; tools are read-only only if they match the admin's `readOnlyTools` globs, or the server's `readOnlyHint` when `trustReadOnlyHints` is enabled; every other tool requires the `writeRole` (default Editor) and returns 403 otherwise. Calls are logged with their classification and user.

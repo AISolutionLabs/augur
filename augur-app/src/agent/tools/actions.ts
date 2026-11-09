@@ -2,7 +2,8 @@
 // user to approve, plus continuous profiling (Pyroscope).
 
 import { DataSourceInfo, ToolContext, ToolDefinition } from '../types';
-import { buildPanel, buildTargets, buildVariable, checkQueries, layout, PanelSpec, VariableSpec } from '../dashboard';
+import { AnnotationSpec, buildAnnotation, buildPanel, buildTargets, buildVariable, checkQueries, layout, PanelSpec, VariableSpec } from '../dashboard';
+import { annotationSchema } from './dashboards';
 import { DashboardEditProposal, proposalId, SilenceProposal, AlertRuleProposal } from '../proposals';
 import { dsQuery, dsResource, findDataSource, LOKI_TYPES, PROM_TYPES } from '../grafana';
 import { clip, framesOf, summarizeTimeSeries } from '../frames';
@@ -30,6 +31,7 @@ interface EditInput {
   update_panels?: PanelPatch[];
   remove_panel_ids?: number[];
   add_variables?: VariableSpec[];
+  add_annotations?: AnnotationSpec[];
   set?: { title?: string; description?: string; tags?: string[]; time_from?: string; refresh?: string };
 }
 
@@ -168,6 +170,16 @@ export async function buildDashboardEdit(input: EditInput, ctx: ToolContext): Pr
     changes.push(`+ add variable $${v.name}`);
   }
 
+  for (const a of input.add_annotations ?? []) {
+    json.annotations = json.annotations ?? { list: [] };
+    if (json.annotations.list.some((x: any) => x.name === a.name)) {
+      warnings.push(`annotation "${a.name}" already exists`);
+      continue;
+    }
+    json.annotations.list.push(buildAnnotation(a, all, warnings));
+    changes.push(`+ add annotation "${a.name}"`);
+  }
+
   if (input.set) {
     const s = input.set;
     if (s.title) {
@@ -243,6 +255,7 @@ export const proposeDashboardEdit: ToolDefinition = {
         },
         remove_panel_ids: { type: 'array', items: { type: 'number' } },
         add_variables: { type: 'array', items: { type: 'object' } },
+        add_annotations: { type: 'array', items: annotationSchema },
         set: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, time_from: { type: 'string' }, refresh: { type: 'string' } } },
       },
       required: ['dashboard_uid'],

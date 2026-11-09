@@ -1,0 +1,109 @@
+{
+  "requireTools": [
+    "list_datasources",
+    "query_prometheus",
+    "query_loki",
+    "search_traces",
+    "draft_dashboard"
+  ],
+  "turns": [
+    [
+      {
+        "type": "text",
+        "text": "Checking what is available."
+      },
+      {
+        "type": "tool_use",
+        "name": "list_datasources",
+        "input": {}
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "name": "query_prometheus",
+        "input": {
+          "datasource_uid": "{{uid:prometheus}}",
+          "expr": "sum by (job) (rate(http_requests_total[5m]))"
+        }
+      },
+      {
+        "type": "tool_use",
+        "name": "query_loki",
+        "input": {
+          "datasource_uid": "{{uid:loki}}",
+          "expr": "sum by (level) (count_over_time({service=\"payment-service\"}[5m]))"
+        }
+      },
+      {
+        "type": "tool_use",
+        "name": "query_loki",
+        "input": {
+          "datasource_uid": "{{uid:loki}}",
+          "expr": "{service=\"payment-service\"} |= \"error\"",
+          "limit": 20
+        }
+      },
+      {
+        "type": "tool_use",
+        "name": "search_traces",
+        "input": {
+          "datasource_uid": "{{uid:tempo}}",
+          "traceql": "{ status = error }",
+          "limit": 5
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "name": "draft_dashboard",
+        "input": {
+          "title": "Augur e2e: service overview",
+          "tags": [
+            "augur-e2e"
+          ],
+          "panels": [
+            {
+              "title": "Requests by job",
+              "type": "timeseries",
+              "datasource_uid": "{{uid:prometheus}}",
+              "unit": "reqps",
+              "queries": [
+                {
+                  "expr": "sum by (job) (rate(http_requests_total[$__rate_interval]))",
+                  "legend": "{{job}}"
+                }
+              ]
+            },
+            {
+              "title": "Payment errors",
+              "type": "logs",
+              "datasource_uid": "{{uid:loki}}",
+              "queries": [
+                {
+                  "expr": "{service=\"payment-service\"} |= \"error\""
+                }
+              ]
+            }
+          ],
+          "annotations": [
+            {
+              "name": "Deployments",
+              "datasource_uid": "{{uid:loki}}",
+              "expr": "{service=~\"order-service|payment-service\"} |= \"deploy\"",
+              "tag_keys": "service",
+              "title_format": "Deploy {{service}}"
+            }
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "type": "text",
+        "text": "E2E COMPLETE: queried metrics [E1], logs [E2, E3] and traces, and drafted a dashboard."
+      }
+    ]
+  ]
+}

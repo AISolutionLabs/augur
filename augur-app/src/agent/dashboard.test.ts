@@ -115,3 +115,53 @@ describe('dashboard builder', () => {
     expect(wildcardVars('rate(x{a="$a",b=~"${b}"}[$__rate_interval]) by ($group)')).toBe('rate(x{a=~".+",b=~".+"}[$__rate_interval]) by (job)');
   });
 });
+
+describe('query annotations', () => {
+  const deploys = {
+    name: 'Deployments',
+    datasource_uid: 'loki',
+    expr: '{service=~"order-service|payment-service"} | json | event="deployment"',
+    tag_keys: 'service',
+    title_format: 'Deploy {{service}}',
+    text_format: '{{version}}',
+  };
+
+  it('adds Loki and Prometheus annotations next to the built-in one', async () => {
+    const d = await buildDashboardDraft(
+      {
+        title: 'Svc',
+        check_queries: false,
+        annotations: [deploys, { name: 'Restarts', datasource_uid: 'mimir', expr: 'changes(process_start_time_seconds[5m]) > 0' }],
+        panels: [{ title: 'p', type: 'timeseries', datasource_uid: 'mimir', queries: [{ expr: 'up' }] }],
+      },
+      ctxWith(fakeHttp(() => ({})))
+    );
+    const list = d.json.annotations.list;
+    expect(list.map((a: any) => a.name)).toEqual(['Annotations & Alerts', 'Deployments', 'Restarts']);
+    expect(list[1]).toMatchObject({ datasource: { uid: 'loki', type: 'loki' }, enable: true, expr: deploys.expr, target: { expr: deploys.expr }, tagKeys: 'service', titleFormat: 'Deploy {{service}}', textFormat: '{{version}}', instant: false });
+    expect(list[2]).toMatchObject({ datasource: { uid: 'mimir', type: 'prometheus' }, step: '60s' });
+    expect(d.warnings).toEqual([]);
+  });
+
+  it('warns about unsupported datasources and missing queries', async () => {
+    const d = await buildDashboardDraft(
+      { title: 'x', check_queries: false, annotations: [{ name: 'T', datasource_uid: 'tempo', expr: '' }], panels: [{ title: 'p', type: 'timeseries', datasource_uid: 'mimir', queries: [{ expr: 'up' }] }] },
+      ctxWith(fakeHttp(() => ({})))
+    );
+    expect(d.warnings.join(' ')).toMatch(/expr is required/);
+    expect(d.warnings.join(' ')).toMatch(/only Loki and Prometheus/);
+  });
+
+  it('keeps existing annotations when extending a dashboard, and edits can add them', async () => {
+    const { buildDashboardEdit } = await import('./tools/actions');
+    const existing = { uid: 'orig', title: 'Orig', version: 3, panels: [], annotations: { list: [{ builtIn: 1, name: 'Annotations & Alerts' }, { name: 'Old' }] } };
+    const http = fakeHttp(() => ({ dashboard: existing, meta: { canSave: true, folderUid: 'f' } }));
+    const ext = await buildDashboardDraft({ title: 'Copy', extend_dashboard_uid: 'orig', check_queries: false, annotations: [deploys], panels: [{ title: 'p', type: 'stat', datasource_uid: 'mimir', queries: [{ expr: 'up' }] }] }, ctxWith(http));
+    expect(ext.json.annotations.list.map((a: any) => a.name)).toEqual(['Annotations & Alerts', 'Old', 'Deployments']);
+
+    const edit = await buildDashboardEdit({ dashboard_uid: 'orig', add_annotations: [deploys, { ...deploys, name: 'Old' }] }, ctxWith(http));
+    expect(edit.json.annotations.list.map((a: any) => a.name)).toEqual(['Annotations & Alerts', 'Old', 'Deployments']);
+    expect(edit.changes).toContain('+ add annotation "Deployments"');
+    expect(edit.warnings).toContain('annotation "Old" already exists');
+  });
+});

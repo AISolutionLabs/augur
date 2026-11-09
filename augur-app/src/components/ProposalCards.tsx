@@ -4,6 +4,7 @@ import { GrafanaTheme2 } from '@grafana/data';
 import { config } from '@grafana/runtime';
 import { Alert, Badge, Button, Combobox, ComboboxOption, LinkButton, Stack, useStyles2 } from '@grafana/ui';
 import { Proposal, DashboardEditProposal, SilenceProposal, AlertRuleProposal } from '../agent/proposals';
+import { applyProposal } from '../agent/apply';
 import { grafanaHttp } from '../api';
 import { errorMessage } from '../agent/grafana';
 import { DraftCard } from './DraftCard';
@@ -69,13 +70,8 @@ function EditCard({ p, onApplied }: { p: DashboardEditProposal; onApplied: Propo
   const bad = p.checks.filter((c) => c.status === 'error' || c.status === 'empty');
   const apply = () =>
     a.run(async () => {
-      const r = await grafanaHttp.post<{ url: string }>('/api/dashboards/db', {
-        dashboard: p.json,
-        folderUid: p.folderUid ?? '',
-        overwrite: false,
-        message: `Augur: ${(p as any).summary ?? p.changes.slice(0, 3).join('; ')}`.slice(0, 250),
-      });
-      onApplied(`Applied changes to "${p.title}" (new version; restorable from version history)`, r.url);
+      const r = await applyProposal(grafanaHttp, p);
+      onApplied(r.message, r.url);
       return { url: r.url };
     });
   return (
@@ -122,16 +118,9 @@ function SilenceCard({ p, onApplied }: { p: SilenceProposal; onApplied: Proposal
   const a = useApply();
   const create = () =>
     a.run(async () => {
-      const r = await grafanaHttp.post<{ silenceID: string }>('/api/alertmanager/grafana/api/v2/silences', {
-        matchers: p.matchers,
-        startsAt: new Date().toISOString(),
-        endsAt: p.endsAt,
-        comment: p.comment,
-        createdBy: config.bootData?.user?.login ?? 'augur',
-      });
-      const url = `/alerting/silences`;
-      onApplied(`Created silence ${r.silenceID ?? ''} until ${p.endsAt}`, url);
-      return { url };
+      const r = await applyProposal(grafanaHttp, p, { login: config.bootData?.user?.login });
+      onApplied(r.message, r.url);
+      return { url: r.url };
     });
   return (
     <Shell kicker="Proposed silence" title={p.matchers.map((m) => `${m.name}${m.isEqual ? '' : '!'}${m.isRegex ? '=~' : '='}"${m.value}"`).join(', ')} badges={<Badge color={p.matchingAlerts.length ? 'orange' : 'blue'} text={`${p.matchingAlerts.length} firing alert${p.matchingAlerts.length === 1 ? ' matches' : 's match'}`} />}>
@@ -168,15 +157,9 @@ function AlertRuleCard({ p, onApplied }: { p: AlertRuleProposal; onApplied: Prop
   }, []);
   const create = () =>
     a.run(async () => {
-      const r = await grafanaHttp.post<{ uid: string }>(
-        '/api/v1/provisioning/alert-rules',
-        { ...p.rule, folderUID: folder },
-        undefined,
-        { 'X-Disable-Provenance': 'true' } // keep the rule editable in the UI
-      );
-      const url = `/alerting/grafana/${r.uid}/view`;
-      onApplied(`Created alert rule "${p.rule.title}"`, url);
-      return { url };
+      const r = await applyProposal(grafanaHttp, p, { folderUid: folder });
+      onApplied(r.message, r.url);
+      return { url: r.url };
     });
   return (
     <Shell kicker="Proposed alert rule" title={p.rule.title} badges={<Badge color="purple" text={p.rule.for ? `for ${p.rule.for}` : ''} />}>

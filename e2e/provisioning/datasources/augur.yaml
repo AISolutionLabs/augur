@@ -1,0 +1,15 @@
+apiVersion: 1
+datasources:
+  # Points at the scripted stub model (stub-model.mjs), not a real model.
+  - name: Claude (e2e stub)
+    uid: augur-e2e
+    type: augur-claude-datasource
+    access: proxy
+    url: http://stub:8787
+    jsonData:
+      authMethod: apiKey
+      apiKeyHeader: x-api-key
+      defaultModel: stub-model
+      maxTokens: 4096
+    secureJsonData:
+      apiKey: e2e-not-a-real-key

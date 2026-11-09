@@ -2,7 +2,7 @@ APP := augur-app
 DS  := augur-datasource
 VERSION ?= $(shell node -p "require('./$(APP)/package.json').version")
 
-.PHONY: install test lint compat build build-frontend build-backend package zip version clean
+.PHONY: install test lint compat build build-frontend build-backend build-headless e2e bench package zip version clean
 
 install:
 	cd $(APP) && npm ci
@@ -28,7 +28,18 @@ build-frontend:
 build-backend:
 	cd $(DS) && mage -v buildAll
 
-build: build-frontend build-backend
+build: build-frontend build-backend build-headless
+
+build-headless:
+	cd $(APP) && npm run build:headless
+
+# Real Grafana + LGTM + the built plugins + a scripted stub model (needs Docker; Chrome for the UI step).
+e2e:
+	e2e/run.sh
+
+# o11y-bench with your model, e.g. make bench MODEL=anthropic/claude-sonnet-5-5 ARGS="--task-name query-cpu-metrics"
+bench:
+	bench/o11y-bench/run.sh $(MODEL) $(ARGS)
 
 # Zips in the layout Grafana expects: <plugin-id>/... at the archive root.
 package: build zip
@@ -49,4 +60,4 @@ version:
 	scripts/set-version.sh $(VERSION)
 
 clean:
-	rm -rf $(APP)/dist $(DS)/dist release
+	rm -rf $(APP)/dist $(APP)/dist-headless $(DS)/dist release

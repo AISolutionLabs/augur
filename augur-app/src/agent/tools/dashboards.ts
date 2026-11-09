@@ -18,6 +18,21 @@ export const listFolders: ToolDefinition = {
   },
 };
 
+export const annotationSchema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    datasource_uid: { type: 'string', description: 'Loki or Prometheus datasource' },
+    expr: { type: 'string', description: 'LogQL (each line becomes an event, e.g. {app="x"} |= "deployed" | json) or PromQL (non-zero samples become events, e.g. changes(kube_deployment_status_observed_generation[2m]) > 0)' },
+    tag_keys: { type: 'string', description: 'Loki: comma-separated labels/fields to use as tags, e.g. service,version' },
+    title_format: { type: 'string', description: 'e.g. Deploy {{service}}' },
+    text_format: { type: 'string', description: 'e.g. {{version}} {{message}}' },
+    color: { type: 'string' },
+    enabled: { type: 'boolean' },
+  },
+  required: ['name', 'datasource_uid', 'expr'],
+};
+
 const panelSchema = {
   type: 'object',
   properties: {
@@ -83,6 +98,7 @@ export function draftDashboardTool(onDraft?: (d: DashboardDraft) => void): ToolD
               required: ['name', 'type'],
             },
           },
+          annotations: { type: 'array', description: 'Query annotations (e.g. deployment events from logs) drawn as markers on every graph', items: annotationSchema },
           panels: { type: 'array', items: panelSchema },
           check_queries: { type: 'boolean', description: 'Dry-run queries (default true)' },
         },
