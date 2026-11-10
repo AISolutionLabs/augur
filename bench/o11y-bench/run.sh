@@ -13,7 +13,7 @@ set -euo pipefail
 MODEL=${1:?usage: run.sh <provider/model> [o11y-bench job args]}
 shift
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REF=${O11Y_BENCH_REF:-b66d8cfbbe309d2e03e9a301baea056d9718b71b}
+REF=${O11Y_BENCH_REF:-$(cat "$ROOT/e2e/o11y-bench.ref")}
 DIR=${O11Y_BENCH_DIR:-$ROOT/bench/.o11y-bench}
 
 [ -d "$DIR/.git" ] || git clone -q https://github.com/grafana/o11y-bench "$DIR"

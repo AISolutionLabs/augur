@@ -1,0 +1,13 @@
+# Same o11y-bench Grafana 13 stack as docker-compose.yaml, but WITHOUT the Augur plugins: the
+# baseline arm of the React #185 control experiment (see control.mjs).
+services:
+  stack:
+    build: ${O11Y_BENCH_DIR:?set O11Y_BENCH_DIR}/docker
+    ports:
+      - '3000:3000'
+    environment:
+      O11Y_SCENARIO_TIME_ISO: ${O11Y_SCENARIO_TIME_ISO:-}
+    healthcheck:
+      test: ['CMD', 'curl', '-s', '-o', '/dev/null', 'http://localhost:8080/']
+      interval: 2s
+      retries: 150

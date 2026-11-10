@@ -4,7 +4,7 @@
 # check (CHROME_PATH; skip with E2E_UI=0). Run `make build` first.
 set -euo pipefail
 cd "$(dirname "$0")"
-O11Y_BENCH_REF=${O11Y_BENCH_REF:-b66d8cfbbe309d2e03e9a301baea056d9718b71b}
+O11Y_BENCH_REF=${O11Y_BENCH_REF:-$(cat o11y-bench.ref)}
 export O11Y_BENCH_DIR=${O11Y_BENCH_DIR:-$PWD/.o11y-bench}
 if [ ! -d "$O11Y_BENCH_DIR/.git" ]; then
   git clone -q https://github.com/grafana/o11y-bench "$O11Y_BENCH_DIR"

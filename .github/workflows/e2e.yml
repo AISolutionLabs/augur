@@ -37,6 +37,13 @@ jobs:
           version: latest
           args: -v build:linux
           workdir: augur-datasource
+      - name: Summary header
+        run: |
+          {
+            echo "### React #185 update loops (probe)"
+            echo "| Arm | Passes | Grafana-only loops | Result |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Run e2e
         env:
           CHROME_PATH: /usr/bin/google-chrome
@@ -64,3 +71,56 @@ jobs:
             e2e/e2e-ui.png
             e2e/artifacts/
           if-no-files-found: ignore
+
+  # Control experiment for the intermittent React #185 in Grafana 13's chrome: the same Grafana
+  # stack browsed without Augur, and with Augur installed but idle. Reports only; never fails.
+  loop-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CHROME_PATH: /usr/bin/google-chrome
+      O11Y_BENCH_DIR: ${{ github.workspace }}/e2e/.o11y-bench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: augur-app/.nvmrc
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: augur-datasource/go.mod
+          cache-dependency-path: augur-datasource/go.sum
+      - name: Build plugins
+        run: |
+          (cd augur-app && npm ci && npm run build)
+          (cd augur-datasource && npm ci && npm run build)
+      - uses: magefile/mage-action@v3
+        with:
+          version: latest
+          args: -v build:linux
+          workdir: augur-datasource
+      - name: Prepare
+        working-directory: e2e
+        run: |
+          git clone -q https://github.com/grafana/o11y-bench "$O11Y_BENCH_DIR"
+          git -C "$O11Y_BENCH_DIR" checkout -q "$(cat o11y-bench.ref)"
+          npm ci --ignore-scripts
+          {
+            echo "### React #185 control experiment"
+            echo "| Arm | Passes | Update loops | Result |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Without Augur
+        working-directory: e2e
+        run: |
+          export O11Y_SCENARIO_TIME_ISO=$(date -u +%Y-%m-%dT%H:%M:00Z)
+          docker compose -f docker-compose.control.yaml up -d --build --wait
+          CONTROL_LABEL="Without Augur (Grafana pages)" node control.mjs
+          docker compose -f docker-compose.control.yaml down -v
+      - name: Augur installed, idle
+        working-directory: e2e
+        run: |
+          export O11Y_SCENARIO_TIME_ISO=$(date -u +%Y-%m-%dT%H:%M:00Z)
+          mkdir -p artifacts
+          docker compose up -d --build --wait
+          CONTROL_LABEL="Augur installed, idle (Grafana pages)" node control.mjs
+          docker compose down -v
