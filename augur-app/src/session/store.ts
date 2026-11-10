@@ -183,7 +183,37 @@ class AugurStore {
 
   private set(patch: Partial<StoreState>) {
     this.state = { ...this.state, ...patch };
-    this.listeners.forEach((l) => l());
+    if (this.state.running) {
+      this.scheduleNotify();
+    } else {
+      // User actions and the end of a run render right away.
+      this.notifyPending = false;
+      this.listeners.forEach((l) => l());
+    }
+  }
+
+  // During a run, listeners (React via useSyncExternalStore) are notified at most once per frame. Every
+  // notification is a synchronous re-render of the whole Grafana page, and a fast run can change
+  // the state dozens of times in a few milliseconds; unbatched, that burst made React abort with
+  // error #185 (too many nested updates) in Grafana 13. getState() always returns the latest state.
+  private notifyPending = false;
+  private scheduleNotify() {
+    if (this.notifyPending) {
+      return;
+    }
+    this.notifyPending = true;
+    const flush = () => {
+      if (!this.notifyPending) {
+        return;
+      }
+      this.notifyPending = false;
+      this.listeners.forEach((l) => l());
+    };
+    // requestAnimationFrame pauses in background tabs, so a timer backs it up.
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(flush);
+    }
+    setTimeout(flush, 50);
   }
 
   private updateSession(fn: (s: SessionState) => SessionState, immediate = false) {

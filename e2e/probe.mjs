@@ -28,7 +28,7 @@ export const LOOP_PROBE = () => {
     onCommitFiberRoot(_id, root) {
       const changed = [];
       const visit = (f, depth) => {
-        for (let n = f; n && changed.length < 12 && depth < 400; n = n.sibling) {
+        for (let n = f; n && changed.length < 3000 && depth < 400; n = n.sibling) {
           const a = n.alternate;
           if (a && nameOf(n) && (n.memoizedState !== a.memoizedState || n.memoizedProps !== a.memoizedProps) && n.flags & 0x4 /* Update */) {
             changed.push(`${nameOf(n)}@${where(n)}`);
@@ -75,6 +75,9 @@ export const LOOP_PROBE = () => {
     const scrolled = scrolls.filter((t) => t >= from).length;
     const changes = layout.filter((x) => x.t >= from - 50);
     const layoutNote = `; layout changes in window: ${changes.length}${changes.length ? ` [${[...new Set(changes.map((x) => x.v))].slice(0, 4).join(' ↔ ')}]` : ''}`;
-    return `${last.length} commits in ${span}ms, ${scrolled} scroll events${layoutNote}; most updated: ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none'}`;
+    const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const augur = ranked.filter(([k]) => k.includes('(augur)'));
+    const fmt = (xs) => xs.slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none';
+    return `${last.length} commits in ${span}ms, ${scrolled} scroll events${layoutNote}; most updated: ${fmt(ranked)}; augur components updated: ${fmt(augur)}`;
   };
 };

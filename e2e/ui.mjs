@@ -16,7 +16,7 @@ const browser = await puppeteer.launch({
 
 const failures = [];
 const runs = Math.max(1, Number(process.env.E2E_UI_RUNS ?? 1));
-const grafanaOnly = [];
+let loopCount = 0;
 const check = (ok, what) => (console.log(`${ok ? '✓' : '✗'} ${what}`), ok || failures.push(what));
 
 // One UI pass in a fresh browser context (empty localStorage, so a new conversation each time).
@@ -33,13 +33,7 @@ async function runOnce(n) {
       const loop = /#185|Maximum update depth/.test(String(e)) ? page.evaluate(() => window.__augurLoopReport?.()).catch(() => 'no probe') : Promise.resolve('');
       loop.then((report) => {
         const line = `${String(e).split('\n')[0]}${report ? ` [loop: ${report}]` : ''}`;
-        // An update loop whose components are all Grafana's own chrome (none inside Augur) is a
-        // Grafana bug, seen intermittently on Grafana 13: report it, but don't fail Augur's test.
-        if (report && !report.includes('(augur)') && /most updated: (?!none)/.test(report)) {
-          grafanaOnly.push(line);
-          console.log(`${tag}⚠ update loop in Grafana's own UI (no Augur components involved):\n    ${line}`);
-          return;
-        }
+        if (report) loopCount++;
         errors.push(line);
         console.log(`${tag}page error:\n    ${stack}${report ? `\n    loop probe: ${report}` : ''}`);
       });
@@ -80,11 +74,11 @@ try {
 if (process.env.GITHUB_STEP_SUMMARY) {
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    `| Augur in use (chat run on the Augur page) | ${runs} | ${grafanaOnly.length} | ${failures.length ? 'failed' : 'ok'} |\n`
+    `| Augur in use (chat run on the Augur page) | ${runs} | ${loopCount} | ${failures.length ? 'failed' : 'ok'} |\n`
   );
 }
-if (grafanaOnly.length) {
-  console.log(`\n⚠ ${grafanaOnly.length} update loop(s) in Grafana's own UI during ${runs} run(s); not counted as Augur failures.`);
+if (loopCount) {
+  console.log(`\n${loopCount} React update loop(s) (#185) during ${runs} Augur run(s).`);
 }
 console.log(failures.length ? `\n${failures.length} UI check(s) failed` : `\nAll UI checks passed${runs > 1 ? ` (${runs} runs)` : ''}`);
 process.exit(failures.length ? 1 : 0);
