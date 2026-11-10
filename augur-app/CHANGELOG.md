@@ -1,9 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Augur at the top level of the menu (between Drilldown and Alerting) in the demo and the documented install config (`[navigation.app_sections] augur-assistant-app = root -3450`); CI checks the menu placement.
+
 ## 1.5.0
 
 - Model picker shows the models the endpoint offers to you (with display names), instead of a hardcoded list.
-- Augur at the top level of the menu (between Drilldown and Alerting) in the demo and the documented install config (`[navigation.app_sections] augur-assistant-app = root -3450`); CI checks the menu placement.
 - Demo `deploy/docker-compose.yaml`: plugins mounted at `/data/grafana/plugins` (current `grafana/otel-lgtm` overrides `GF_PATHS_PLUGINS`); CI now checks the demo loads both plugins.
 
 ## 1.4.0
