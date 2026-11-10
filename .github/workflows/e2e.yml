@@ -41,6 +41,8 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
           SCREENSHOT: ${{ github.workspace }}/e2e/e2e-ui.png
+          # Repeat the browser pass to surface intermittent UI errors (each ~30s).
+          E2E_UI_RUNS: '5'
         run: e2e/run.sh
       - name: Demo compose (deploy/) loads the plugins
         run: |

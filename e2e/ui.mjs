@@ -62,43 +62,58 @@ const LOOP_PROBE = () => {
 };
 
 const failures = [];
+const runs = Math.max(1, Number(process.env.E2E_UI_RUNS ?? 1));
 const check = (ok, what) => (console.log(`${ok ? '✓' : '✗'} ${what}`), ok || failures.push(what));
-try {
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1500, height: 1100 });
-  await page.evaluateOnNewDocument(LOOP_PROBE);
-  const errors = [];
-  page.on('pageerror', (e) => {
-    // Keep the stack: it shows whether the error came from Augur (public/plugins/augur-…) or Grafana.
-    const stack = String(e.stack ?? e).split('\n').slice(0, 8).join('\n    ');
-    const loop = /#185|Maximum update depth/.test(String(e)) ? page.evaluate(() => window.__augurLoopReport?.()).catch(() => 'no probe') : Promise.resolve('');
-    loop.then((report) => {
-      errors.push(`${String(e).split('\n')[0]}${report ? ` [loop: ${report}]` : ''}`);
-      console.log(`page error:\n    ${stack}${report ? `\n    loop probe: ${report}` : ''}`);
-    });
-  });
-  page.on('console', (m) => m.type() === 'error' && /augur/i.test(m.text()) && errors.push(m.text()));
 
-  await page.goto(`${grafana}/a/augur-assistant-app`, { waitUntil: 'networkidle2', timeout: 60_000 });
-  const box = await page.waitForSelector('textarea[placeholder*="Ask"]', { timeout: 30_000 }).catch(() => null);
-  check(!!box, 'Augur app page renders with the composer');
-  if (box) {
-    await box.type('Give me an overview of service health and build a dashboard for it.');
-    await page.keyboard.press('Enter');
-    const done = await page.waitForFunction(() => document.body.innerText.includes('E2E COMPLETE'), { timeout: 120_000 }).then(() => true, () => false);
-    check(done, 'scripted run finished in the UI');
-    const text = await page.evaluate(() => document.querySelector('[data-testid="claude-timeline"]')?.innerText ?? '');
-    check(!/STUB REQUEST PROBLEMS/.test(text), 'model requests from the browser were well-formed');
-    check(!/HTTP (4|5)\d\d/.test(text), 'no tool or gateway errors shown');
-    check(!!(await page.$('[data-testid="claude-draft-card"]')), 'dashboard draft card shown (not applied without a click)');
+// One UI pass in a fresh browser context (empty localStorage, so a new conversation each time).
+async function runOnce(n) {
+  const tag = runs > 1 ? `[run ${n}/${runs}] ` : '';
+  const context = await browser.createBrowserContext();
+  try {
+    const page = await context.newPage();
+    await page.setViewport({ width: 1500, height: 1100 });
+    await page.evaluateOnNewDocument(LOOP_PROBE);
+    const errors = [];
+    page.on('pageerror', (e) => {
+      const stack = String(e.stack ?? e).split('\n').slice(0, 8).join('\n    ');
+      const loop = /#185|Maximum update depth/.test(String(e)) ? page.evaluate(() => window.__augurLoopReport?.()).catch(() => 'no probe') : Promise.resolve('');
+      loop.then((report) => {
+        errors.push(`${String(e).split('\n')[0]}${report ? ` [loop: ${report}]` : ''}`);
+        console.log(`${tag}page error:\n    ${stack}${report ? `\n    loop probe: ${report}` : ''}`);
+      });
+    });
+    page.on('console', (m) => m.type() === 'error' && /augur/i.test(m.text()) && errors.push(m.text()));
+
+    await page.goto(`${grafana}/a/augur-assistant-app`, { waitUntil: 'networkidle2', timeout: 60_000 });
+    const box = await page.waitForSelector('textarea[placeholder*="Ask"]', { timeout: 30_000 }).catch(() => null);
+    check(!!box, `${tag}Augur app page renders with the composer`);
+    if (box) {
+      await box.type('Give me an overview of service health and build a dashboard for it.');
+      await page.keyboard.press('Enter');
+      const done = await page.waitForFunction(() => document.body.innerText.includes('E2E COMPLETE'), { timeout: 120_000 }).then(() => true, () => false);
+      check(done, `${tag}scripted run finished in the UI`);
+      const text = await page.evaluate(() => document.querySelector('[data-testid="claude-timeline"]')?.innerText ?? '');
+      check(!/STUB REQUEST PROBLEMS/.test(text), `${tag}model requests from the browser were well-formed`);
+      check(!/HTTP (4|5)\d\d/.test(text), `${tag}no tool or gateway errors shown`);
+      check(!!(await page.$('[data-testid="claude-draft-card"]')), `${tag}dashboard draft card shown (not applied without a click)`);
+    }
+    // Let late renders (folder list, scrolling) settle so errors after the run are caught too.
+    await new Promise((r) => setTimeout(r, 3000));
+    check(errors.length === 0, `${tag}no page errors${errors.length ? `: ${errors.slice(0, 3).join(' | ')}` : ''}`);
+    if (process.env.SCREENSHOT && (n === runs || errors.length)) {
+      await page.screenshot({ path: process.env.SCREENSHOT, fullPage: true });
+    }
+  } finally {
+    await context.close();
   }
-  await new Promise((r) => setTimeout(r, 1000));
-  check(errors.length === 0, `no page errors${errors.length ? `: ${errors.slice(0, 3).join(' | ')}` : ''}`);
-  if (process.env.SCREENSHOT) {
-    await page.screenshot({ path: process.env.SCREENSHOT, fullPage: true });
+}
+
+try {
+  for (let n = 1; n <= runs; n++) {
+    await runOnce(n);
   }
 } finally {
   await browser.close();
 }
-console.log(failures.length ? `\n${failures.length} UI check(s) failed` : '\nAll UI checks passed');
+console.log(failures.length ? `\n${failures.length} UI check(s) failed` : `\nAll UI checks passed${runs > 1 ? ` (${runs} runs)` : ''}`);
 process.exit(failures.length ? 1 : 0);

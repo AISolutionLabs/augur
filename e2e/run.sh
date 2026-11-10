@@ -40,5 +40,5 @@ echo; echo "== headless, model through the Augur datasource backend"
 AUGUR_DATASOURCE_UID=augur-e2e node smoke.mjs
 if [ "${E2E_UI:-1}" = 1 ]; then
   echo; echo "== UI in Chrome"
-  SCREENSHOT=${SCREENSHOT:-$PWD/e2e-ui.png} node ui.mjs
+  SCREENSHOT=${SCREENSHOT:-$PWD/e2e-ui.png} E2E_UI_RUNS=${E2E_UI_RUNS:-1} node ui.mjs
 fi
