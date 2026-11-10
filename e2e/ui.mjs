@@ -16,7 +16,12 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1500, height: 1100 });
   const errors = [];
-  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('pageerror', (e) => {
+    // Keep the stack: it shows whether the error came from Augur (public/plugins/augur-…) or Grafana.
+    const stack = String(e.stack ?? e).split('\n').slice(0, 8).join('\n    ');
+    errors.push(stack);
+    console.log(`page error:\n    ${stack}`);
+  });
   page.on('console', (m) => m.type() === 'error' && /augur/i.test(m.text()) && errors.push(m.text()));
 
   await page.goto(`${grafana}/a/augur-assistant-app`, { waitUntil: 'networkidle2', timeout: 60_000 });
