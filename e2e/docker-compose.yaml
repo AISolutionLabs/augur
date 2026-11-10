@@ -19,7 +19,8 @@ services:
       - ./provisioning/datasources/augur.yaml:/etc/grafana/provisioning/datasources/augur.yaml:ro
       - ./provisioning/plugins/augur.yaml:/etc/grafana/provisioning/plugins/augur.yaml:ro
     healthcheck:
-      test: ['CMD', 'curl', '-sf', 'http://localhost:8080/']
+      # Ready once mcp-grafana listens (the entrypoint starts it last); its root answers 404.
+      test: ['CMD', 'curl', '-s', '-o', '/dev/null', 'http://localhost:8080/']
       interval: 2s
       retries: 150
   stub:
