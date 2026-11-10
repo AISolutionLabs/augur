@@ -16,6 +16,8 @@ const browser = await puppeteer.launch({
 // and to where they are on the page, which the error's own stack cannot show.
 const LOOP_PROBE = () => {
   const recent = [];
+  const scrolls = [];
+  addEventListener('scroll', () => { scrolls.push(performance.now()); if (scrolls.length > 400) scrolls.shift(); }, { capture: true, passive: true });
   const nameOf = (f) => (typeof f.type === 'function' || typeof f.type === 'object' ? f.type?.displayName || f.type?.name || f.type?.render?.name || '?' : null);
   const where = (f) => {
     for (let n = f; n; n = n.child) {
@@ -57,7 +59,9 @@ const LOOP_PROBE = () => {
     const counts = {};
     for (const c of last) for (const x of new Set(c.changed)) counts[x] = (counts[x] ?? 0) + 1;
     const span = last.length ? Math.round(last[last.length - 1].t - last[0].t) : 0;
-    return `${last.length} commits in ${span}ms; most updated: ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none'}`;
+    const from = last.length ? last[0].t : 0;
+    const scrolled = scrolls.filter((t) => t >= from).length;
+    return `${last.length} commits in ${span}ms, ${scrolled} scroll events; most updated: ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none'}`;
   };
 };
 

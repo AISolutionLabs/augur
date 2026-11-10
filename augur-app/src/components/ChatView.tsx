@@ -81,8 +81,19 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const { session } = s;
   const mode = session.mode;
 
+  // Follow the conversation only while the user is at the bottom, and jump instead of animating:
+  // a smooth scroll moves Grafana's page container every frame, and Grafana's chrome re-renders on
+  // each of those frames (seen as React error #185 from the breadcrumb/nav in Grafana 13).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
+    const el = bottomRef.current;
+    const scroller = el ? scrollParent(el) : null;
+    if (!el || !scroller) {
+      return;
+    }
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (distance < 400) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
   }, [session.items.length, s.status]);
 
   const started = useRef(false);
@@ -480,3 +491,14 @@ const getStyles = (t: GrafanaTheme2) => ({
   slashItem: css({ all: 'unset', display: 'block', width: '100%', padding: t.spacing(0.75, 1), cursor: 'pointer', '&:hover': { background: t.colors.action.hover } }),
   muted: css({ color: t.colors.text.secondary, fontSize: t.typography.bodySmall.fontSize }),
 });
+
+/** Nearest ancestor that scrolls vertically (Grafana's page container), or the document. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let n = el.parentElement; n; n = n.parentElement) {
+    const o = getComputedStyle(n).overflowY;
+    if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) {
+      return n;
+    }
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? null;
+}
