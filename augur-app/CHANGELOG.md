@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Fix: intermittent React error #185 (update loop in Grafana's breadcrumb/nav) during runs on Grafana 13, triggered by the chat's smooth auto-scroll moving Grafana's page container every frame. Auto-scroll now jumps, and only while you are at the bottom.
+- Chat auto-scroll jumps instead of animating, and only follows new messages while you are at the bottom (it no longer pulls you down while reading earlier output).
+- E2E: the browser pass runs 5 times in CI with a React commit probe; intermittent update loops confined to Grafana 13's own chrome (breadcrumb, nav menu) are reported as warnings, while any loop involving Augur components fails the test.
 - Augur at the top level of the menu (between Drilldown and Alerting) in the demo and the documented install config (`[navigation.app_sections] augur-assistant-app = root -3450`); CI checks the menu placement.
 
 ## 1.5.0
