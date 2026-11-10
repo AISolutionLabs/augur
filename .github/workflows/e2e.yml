@@ -48,7 +48,8 @@ jobs:
           for _ in $(seq 1 90); do
             if curl -sf http://localhost:3000/api/plugins/augur-assistant-app/settings | grep -q '"enabled":true' &&
                curl -sf http://localhost:3000/api/datasources/uid/claude | grep -q augur-claude-datasource; then
-              echo "✓ demo: Augur app enabled and Claude datasource provisioned"; exit 0
+              echo "✓ demo: Augur app enabled and Claude datasource provisioned"
+              node e2e/nav-check.mjs root; exit $?
             fi
             sleep 2
           done

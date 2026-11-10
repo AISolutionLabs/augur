@@ -21,5 +21,6 @@ services:
       # anything set here), so the plugins go there.
       - ../augur-app/dist:/data/grafana/plugins/augur-assistant-app:ro
       - ../augur-datasource/dist:/data/grafana/plugins/augur-claude-datasource:ro
+      - ./grafana/custom.ini:/otel-lgtm/grafana/conf/custom.ini:ro
       - ./provisioning/datasources/augur.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/augur.yaml
       - ./provisioning/plugins/augur.yaml:/otel-lgtm/grafana/conf/provisioning/plugins/augur.yaml

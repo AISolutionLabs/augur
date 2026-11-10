@@ -26,7 +26,7 @@ export ANTHROPIC_API_KEY=sk-ant-...      # or edit deploy/provisioning/datasourc
 docker compose -f deploy/docker-compose.yaml up
 ```
 
-Open http://localhost:3000 (admin/admin) → **Augur**, and ask *"What's the slowest service right now and why?"*
+Open http://localhost:3000 (admin/admin) → **Augur** (top level of the menu), and ask *"What's the slowest service right now and why?"*
 
 > Grafana is a trademark of Raintank, Inc. (Grafana Labs). Claude is a trademark of Anthropic, PBC. Augur is an independent open-source project, not affiliated with or endorsed by either.
 
@@ -157,11 +157,15 @@ Smaller or open-weight models will run, but investigation quality depends heavil
 Requires **Grafana 12.0 or later** (OSS or Enterprise). The same build runs on 12.x and 13.x.
 
 1. Download `augur-assistant-app-<version>.zip` and `augur-claude-datasource-<version>.zip` from [Releases](https://github.com/AISolutionLabs/augur/releases), and unzip both into your plugins directory.
-2. Until signed, allow them:
+2. Allow the unsigned plugins, and put Augur at the top level of the menu (between Drilldown and Alerting; without this it sits under *More apps*, since plugins can't choose their own menu section):
    ```ini
    [plugins]
    allow_loading_unsigned_plugins = augur-assistant-app,augur-claude-datasource
+
+   [navigation.app_sections]
+   augur-assistant-app = root -3450
    ```
+   With the Grafana Helm chart, put the same under `grafana.ini:` (`plugins:` / `navigation.app_sections:` keys). These must be in `grafana.ini`: `GF_*` environment variables cannot add `navigation.app_sections` entries. Other placements: `explore`, `alerts-and-incidents`, `observability`, `infrastructure`; a lower weight moves it up (Dashboards -3700, Explore -3600, Drilldown -3500, Alerting -3300).
 3. Restart Grafana, enable the **Augur** app, and add a **Claude (Augur)** datasource.
 
 The docked sidebar uses Grafana's extension sidebar. On Grafana versions without it, every entry point (panel menu, Explore, alerts, command palette) opens the full Augur page instead.
