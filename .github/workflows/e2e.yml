@@ -52,8 +52,7 @@ jobs:
           E2E_UI_RUNS: '5'
         run: |
           set -o pipefail
-          mkdir -p e2e/artifacts
-          e2e/run.sh 2>&1 | tee e2e/artifacts/e2e.log
+          e2e/run.sh 2>&1 | tee e2e/e2e.log
       - name: Demo compose (deploy/) loads the plugins
         run: |
           docker compose -f deploy/docker-compose.yaml up -d
@@ -72,6 +71,7 @@ jobs:
           name: e2e-artifacts
           path: |
             e2e/e2e-ui.png
+            e2e/e2e.log
             e2e/artifacts/
           if-no-files-found: ignore
 
@@ -161,13 +161,13 @@ jobs:
             echo "loop-control: $CONTROL"
             echo
             echo "## e2e"
-            grep -hE '✓|✗|⚠|CONTROL RESULT|All .*passed|failed|loop:|error' logs/e2e-artifacts/artifacts/e2e.log 2>/dev/null | grep -v '^\s*at ' | head -150 || echo "(no log)"
+            grep -hE '✓|✗|⚠|CONTROL RESULT|All .*passed|failed|loop:|error' logs/e2e-artifacts/e2e.log 2>/dev/null | grep -v '^\s*at ' | head -150 || echo "(no log)"
             echo
             echo "## loop-control"
             grep -hE '⚠|CONTROL RESULT|page error|loop' logs/control-log/control.log 2>/dev/null | head -60 || echo "(no log)"
             echo
             echo "## e2e failure diagnostics (tail)"
-            [ "$E2E" = success ] || tail -n 80 logs/e2e-artifacts/artifacts/e2e.log 2>/dev/null
+            [ "$E2E" = success ] || tail -n 80 logs/e2e-artifacts/e2e.log 2>/dev/null
           } > summary.md
           cat summary.md
       - name: Publish to ci-results branch
