@@ -20,7 +20,12 @@ done
 
 cleanup() { [ "${E2E_KEEP:-0}" = 1 ] || docker compose down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-docker compose up -d --build --wait
+diagnose() {
+  echo "---- stack container (last 80 lines)"; docker compose logs --tail 80 stack || true
+  for f in artifacts/sidecar/*.log; do [ -f "$f" ] && { echo "---- $f (errors)"; grep -iE 'error|fail|panic|augur' "$f" | tail -40; }; done
+}
+rm -rf artifacts && mkdir -p artifacts
+docker compose up -d --build --wait || { diagnose; exit 1; }
 echo "stack ready (scenario clock $O11Y_SCENARIO_TIME_ISO)"
 
 export GRAFANA_URL=http://localhost:3000

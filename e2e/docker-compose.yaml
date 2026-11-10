@@ -11,7 +11,9 @@ services:
     environment:
       O11Y_SCENARIO_TIME_ISO: ${O11Y_SCENARIO_TIME_ISO:-}
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: augur-assistant-app,augur-claude-datasource
+      O11Y_STACK_DEBUG_LOGS: '1'
     volumes:
+      - ./artifacts:/logs/artifacts
       - ../augur-app/dist:/var/lib/grafana/plugins/augur-assistant-app:ro
       - ../augur-datasource/dist:/var/lib/grafana/plugins/augur-claude-datasource:ro
       - ./provisioning/datasources/augur.yaml:/etc/grafana/provisioning/datasources/augur.yaml:ro
