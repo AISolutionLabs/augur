@@ -50,7 +50,10 @@ jobs:
           SCREENSHOT: ${{ github.workspace }}/e2e/e2e-ui.png
           # Repeat the browser pass to surface intermittent UI errors (each ~30s).
           E2E_UI_RUNS: '5'
-        run: e2e/run.sh
+        run: |
+          set -o pipefail
+          mkdir -p e2e/artifacts
+          e2e/run.sh 2>&1 | tee e2e/artifacts/e2e.log
       - name: Demo compose (deploy/) loads the plugins
         run: |
           docker compose -f deploy/docker-compose.yaml up -d
@@ -112,15 +115,68 @@ jobs:
       - name: Without Augur
         working-directory: e2e
         run: |
+          set -o pipefail
           export O11Y_SCENARIO_TIME_ISO=$(date -u +%Y-%m-%dT%H:%M:00Z)
           docker compose -f docker-compose.control.yaml up -d --build --wait
-          CONTROL_LABEL="Without Augur (Grafana pages)" node control.mjs
+          CONTROL_LABEL="Without Augur (Grafana pages)" node control.mjs 2>&1 | tee -a control.log
           docker compose -f docker-compose.control.yaml down -v
       - name: Augur installed, idle
         working-directory: e2e
         run: |
+          set -o pipefail
           export O11Y_SCENARIO_TIME_ISO=$(date -u +%Y-%m-%dT%H:%M:00Z)
           mkdir -p artifacts
           docker compose up -d --build --wait
-          CONTROL_LABEL="Augur installed, idle (Grafana pages)" node control.mjs
+          CONTROL_LABEL="Augur installed, idle (Grafana pages)" node control.mjs 2>&1 | tee -a control.log
           docker compose down -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: control-log
+          path: e2e/control.log
+          if-no-files-found: ignore
+
+  # Publishes a short text summary of this run to the ci-results branch (results/<sha>.md and
+  # latest.md), readable with plain git where the Actions UI/API is not available.
+  report:
+    if: always() && github.event_name != 'pull_request'
+    needs: [e2e, loop-control]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: logs
+      - name: Write summary
+        env:
+          E2E: ${{ needs.e2e.result }}
+          CONTROL: ${{ needs.loop-control.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "# E2E ${GITHUB_SHA::7} ($(date -u +%FT%TZ))"
+            echo "run: $RUN_URL"
+            echo "e2e: $E2E"
+            echo "loop-control: $CONTROL"
+            echo
+            echo "## e2e"
+            grep -hE '✓|✗|⚠|CONTROL RESULT|All .*passed|failed|loop:|error' logs/e2e-artifacts/artifacts/e2e.log 2>/dev/null | grep -v '^\s*at ' | head -150 || echo "(no log)"
+            echo
+            echo "## loop-control"
+            grep -hE '⚠|CONTROL RESULT|page error|loop' logs/control-log/control.log 2>/dev/null | head -60 || echo "(no log)"
+            echo
+            echo "## e2e failure diagnostics (tail)"
+            [ "$E2E" = success ] || tail -n 80 logs/e2e-artifacts/artifacts/e2e.log 2>/dev/null
+          } > summary.md
+          cat summary.md
+      - name: Publish to ci-results branch
+        run: |
+          git init -q pub && cd pub
+          git config user.name "augur-ci" && git config user.email "augur-ci@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          if git fetch -q --depth 1 origin ci-results; then git checkout -q -b ci-results FETCH_HEAD; else git checkout -q --orphan ci-results; fi
+          mkdir -p results
+          cp ../summary.md "results/${GITHUB_SHA}.md"
+          cp ../summary.md latest.md
+          git add -A && git commit -qm "E2E results for ${GITHUB_SHA::7}" && git push -q origin ci-results
