@@ -41,6 +41,31 @@ export const LOOP_PROBE = () => {
       if (recent.length > 120) recent.shift();
     },
   };
+  // Per-frame layout sampler: records changes in the docked menu's width/scrollbar, the page
+  // scroll container's scrollbar, and the document width, to show what oscillates in a loop.
+  const layout = [];
+  const sample = () => {
+    try {
+      const menu = document.querySelector('[data-testid="data-testid navigation mega-menu"]') ?? document.querySelector('[data-testid="data-testid Nav menu item"]')?.closest('nav, [role="navigation"], ul')?.parentElement;
+      const list = menu?.querySelector('ul');
+      const page = document.getElementById('page-scrollbar');
+      const truncated = document.querySelectorAll('[data-testid="data-testid Nav menu item"] [class*="truncat"], [data-testid="data-testid Nav menu item"] [aria-describedby]').length;
+      const v = [
+        `menuW=${menu ? Math.round(menu.getBoundingClientRect().width) : '-'}`,
+        `menuScroll=${list ? (list.scrollHeight > list.clientHeight ? 'y' : 'n') : '-'}`,
+        `pageScroll=${page ? (page.scrollHeight > page.clientHeight ? 'y' : 'n') : '-'}`,
+        `docW=${document.documentElement.scrollWidth}/${document.documentElement.clientWidth}`,
+        `trunc=${truncated}`,
+      ].join(' ');
+      if (!layout.length || layout[layout.length - 1].v !== v) {
+        layout.push({ t: performance.now(), v });
+        if (layout.length > 300) layout.shift();
+      }
+    } catch {}
+    requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+
   window.__augurLoopReport = () => {
     const last = recent.slice(-60);
     const counts = {};
@@ -48,6 +73,8 @@ export const LOOP_PROBE = () => {
     const span = last.length ? Math.round(last[last.length - 1].t - last[0].t) : 0;
     const from = last.length ? last[0].t : 0;
     const scrolled = scrolls.filter((t) => t >= from).length;
-    return `${last.length} commits in ${span}ms, ${scrolled} scroll events; most updated: ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none'}`;
+    const changes = layout.filter((x) => x.t >= from - 50);
+    const layoutNote = `; layout changes in window: ${changes.length}${changes.length ? ` [${[...new Set(changes.map((x) => x.v))].slice(0, 4).join(' ↔ ')}]` : ''}`;
+    return `${last.length} commits in ${span}ms, ${scrolled} scroll events${layoutNote}; most updated: ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => `${k}×${v}`).join(', ') || 'none'}`;
   };
 };

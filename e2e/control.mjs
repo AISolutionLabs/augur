@@ -11,7 +11,7 @@ const grafana = process.env.GRAFANA_URL ?? 'http://localhost:3000';
 const label = process.env.CONTROL_LABEL ?? 'control';
 const passes = Math.max(1, Number(process.env.CONTROL_PASSES ?? 5));
 const dwellMs = Number(process.env.CONTROL_DWELL_MS ?? 6000);
-const pages = ['/', '/explore', '/dashboards', '/alerting/list', '/connections/datasources', '/drilldown', '/'];
+const pages = (process.env.CONTROL_PAGES ?? '/,/explore,/dashboards,/alerting/list,/connections/datasources,/drilldown,/').split(',');
 
 const browser = await puppeteer.launch({
   executablePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome',

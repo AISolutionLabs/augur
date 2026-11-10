@@ -128,6 +128,7 @@ jobs:
           mkdir -p artifacts
           docker compose up -d --build --wait
           CONTROL_LABEL="Augur installed, idle (Grafana pages)" node control.mjs 2>&1 | tee -a control.log
+          CONTROL_LABEL="Augur page open, no chat" CONTROL_PAGES=/a/augur-assistant-app CONTROL_DWELL_MS=30000 node control.mjs 2>&1 | tee -a control.log
           docker compose down -v
       - uses: actions/upload-artifact@v4
         if: always()
