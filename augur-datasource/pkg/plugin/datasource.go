@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AISolutionLabs/augur/augur-datasource/pkg/models"
+	"github.com/AniAIApps/augur/augur-datasource/pkg/models"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"

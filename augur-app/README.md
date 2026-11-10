@@ -12,6 +12,6 @@ Queries run as the signed-in user, so Grafana permissions apply. Model calls go 
 
 Entry points: the docked **sidebar** on any page (where Grafana provides the extension sidebar), the **Augur** nav item, *Ask Claude about this panel* / *Investigate with Claude* in the panel menu, *Investigate with Claude* on alert rules, and *Ask Claude* in the command palette.
 
-Requires Grafana 12.0+. Docs and source: https://github.com/AISolutionLabs/augur
+Requires Grafana 12.0+. Docs and source: https://github.com/AniAIApps/augur
 
 Grafana is a trademark of Grafana Labs, and Claude is a trademark of Anthropic. Augur is an independent open-source project, not affiliated with or endorsed by either company.

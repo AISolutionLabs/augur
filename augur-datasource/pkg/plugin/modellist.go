@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AISolutionLabs/augur/augur-datasource/pkg/models"
+	"github.com/AniAIApps/augur/augur-datasource/pkg/models"
 )
 
 // Model discovery: the models offered in the chat come from the endpoint's own list (Anthropic

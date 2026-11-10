@@ -56,6 +56,6 @@ Recommendations: keep `allowedTools` narrow, list read-only tools explicitly in 
 
 ## Supply chain
 
-- Release builds run in GitHub Actions from a tagged commit; artifacts are published with SHA-256 checksums and [build provenance attestations](https://docs.github.com/actions/security-guides/using-artifact-attestations) (`gh attestation verify <zip> --repo AISolutionLabs/augur`).
+- Release builds run in GitHub Actions from a tagged commit; artifacts are published with SHA-256 checksums and [build provenance attestations](https://docs.github.com/actions/security-guides/using-artifact-attestations) (`gh attestation verify <zip> --repo AniAIApps/augur`).
 - Plugins are signed when the repository has a Grafana access policy token configured; otherwise they must be explicitly allowed with `allow_loading_unsigned_plugins`.
 - Go dependencies are pinned in `go.sum`; npm dependencies in `package-lock.json`.

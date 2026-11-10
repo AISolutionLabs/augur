@@ -1,4 +1,4 @@
-module github.com/AISolutionLabs/augur/augur-datasource
+module github.com/AniAIApps/augur/augur-datasource
 
 
 go 1.26.3

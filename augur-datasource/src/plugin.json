@@ -9,8 +9,8 @@
   "info": {
     "description": "Claude chat backend for the Claude app: proxies the Messages API with an API key or the signed-in user's forwarded OAuth token.",
     "author": {
-      "name": "AISolutionLabs",
-      "url": "https://github.com/AISolutionLabs"
+      "name": "AniAIApps",
+      "url": "https://github.com/AniAIApps"
     },
     "keywords": [
       "claude",
@@ -26,11 +26,11 @@
     "links": [
       {
         "name": "Source",
-        "url": "https://github.com/AISolutionLabs/augur"
+        "url": "https://github.com/AniAIApps/augur"
       },
       {
         "name": "License",
-        "url": "https://github.com/AISolutionLabs/augur/blob/main/LICENSE"
+        "url": "https://github.com/AniAIApps/augur/blob/main/LICENSE"
       }
     ],
     "screenshots": [],

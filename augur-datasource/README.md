@@ -1,6 +1,6 @@
 # Claude (Augur) datasource
 
-The backend for the [Augur](https://github.com/AISolutionLabs/augur) app. It proxies Claude Messages API calls from Grafana to your gateway, either LiteLLM, the Anthropic API, or any compatible endpoint, and adds credentials on the server so they never reach the browser.
+The backend for the [Augur](https://github.com/AniAIApps/augur) app. It proxies Claude Messages API calls from Grafana to your gateway, either LiteLLM, the Anthropic API, or any compatible endpoint, and adds credentials on the server so they never reach the browser.
 
 **Authentication**
 - **API key:** stored encrypted and sent as `Authorization: Bearer` (LiteLLM virtual keys) or `x-api-key` (Anthropic).

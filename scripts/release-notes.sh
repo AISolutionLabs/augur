@@ -18,5 +18,5 @@ cat <<MD
 ### Install
 1. Download both zips below and unzip them into your Grafana plugins directory (Grafana 12.0+).
 2. Unsigned builds need \`allow_loading_unsigned_plugins = augur-assistant-app,augur-claude-datasource\`.
-3. Verify downloads with \`sha256sum -c SHA256SUMS\` and, optionally, \`gh attestation verify <zip> --repo AISolutionLabs/augur\`.
+3. Verify downloads with \`sha256sum -c SHA256SUMS\` and, optionally, \`gh attestation verify <zip> --repo AniAIApps/augur\`.
 MD

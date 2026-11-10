@@ -20,7 +20,7 @@ Data queries run **as the signed-in user** through Grafana's own APIs, so Grafan
 Try it locally with Grafana, Prometheus, Loki and Tempo preloaded with sample telemetry:
 
 ```bash
-git clone https://github.com/AISolutionLabs/augur && cd augur
+git clone https://github.com/AniAIApps/augur && cd augur
 make install build                       # needs Node 22, Go and mage; or unzip the release zips into augur-*/dist
 export ANTHROPIC_API_KEY=sk-ant-...      # or edit deploy/provisioning/datasources/augur.yaml for LiteLLM
 docker compose -f deploy/docker-compose.yaml up
@@ -156,7 +156,7 @@ Smaller or open-weight models will run, but investigation quality depends heavil
 
 Requires **Grafana 12.0 or later** (OSS or Enterprise). The same build runs on 12.x and 13.x.
 
-1. Download `augur-assistant-app-<version>.zip` and `augur-claude-datasource-<version>.zip` from [Releases](https://github.com/AISolutionLabs/augur/releases), and unzip both into your plugins directory.
+1. Download `augur-assistant-app-<version>.zip` and `augur-claude-datasource-<version>.zip` from [Releases](https://github.com/AniAIApps/augur/releases), and unzip both into your plugins directory.
 2. Allow the unsigned plugins, and put Augur at the top level of the menu (between Drilldown and Alerting; without this it sits under *More apps*, since plugins can't choose their own menu section):
    ```ini
    [plugins]
@@ -357,7 +357,7 @@ Releases are built and published by GitHub Actions ([`release.yml`](.github/work
 - **One click:** *Actions → Release → Run workflow*, enter a version (e.g. `1.2.0`, or `1.2.0-rc.1` for a pre-release). The workflow bumps both plugins, commits, tags `v1.2.0` and releases.
 - **Or tag it yourself:** `git tag v1.2.0 && git push origin v1.2.0`.
 
-Each release runs lint, tests, the Grafana 12.0 compatibility check and the full build (Go backends for Linux, macOS and Windows). It optionally signs the plugins, checks the archive layout, runs Grafana's plugin validator (advisory), and publishes both zips plus `SHA256SUMS` to GitHub Releases, with notes from the CHANGELOGs and build-provenance attestations (`gh attestation verify <zip> --repo AISolutionLabs/augur`). Add a `## <version>` section to both CHANGELOGs before releasing.
+Each release runs lint, tests, the Grafana 12.0 compatibility check and the full build (Go backends for Linux, macOS and Windows). It optionally signs the plugins, checks the archive layout, runs Grafana's plugin validator (advisory), and publishes both zips plus `SHA256SUMS` to GitHub Releases, with notes from the CHANGELOGs and build-provenance attestations (`gh attestation verify <zip> --repo AniAIApps/augur`). Add a `## <version>` section to both CHANGELOGs before releasing.
 
 To sign, add the repository secret `GRAFANA_ACCESS_POLICY_TOKEN`. For a private signature, also add the variable `GRAFANA_SIGN_ROOT_URLS` (e.g. `https://grafana.example.com`). Without the secret, unsigned builds are published.
 

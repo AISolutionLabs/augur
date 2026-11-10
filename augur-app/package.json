@@ -13,7 +13,7 @@
     "sign": "sign-plugin",
     "build:headless": "node scripts/build-headless.mjs"
   },
-  "author": "AISolutionLabs",
+  "author": "AniAIApps",
   "license": "MIT",
   "devDependencies": {
     "@grafana/eslint-config": "^10.0.0",
@@ -83,6 +83,6 @@
   "packageManager": "npm@10.9.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AISolutionLabs/augur.git"
+    "url": "https://github.com/AniAIApps/augur.git"
   }
 }

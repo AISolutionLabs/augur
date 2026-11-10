@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/AISolutionLabs/augur/augur-datasource/pkg/plugin"
+	"github.com/AniAIApps/augur/augur-datasource/pkg/plugin"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 )
