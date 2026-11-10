@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -38,6 +39,8 @@ const (
 const (
 	DefaultMessagesPath     = "/v1/messages"
 	DefaultModelsPath       = "/v1/models"
+	ModelDiscoveryEndpoint  = "endpoint"
+	ModelDiscoveryOff       = "off"
 	DefaultAnthropicVersion = "2023-06-01"
 	DefaultModel            = "claude-sonnet-5-5"
 	DefaultMaxTokens        = 8192
@@ -56,13 +59,21 @@ type PluginSettings struct {
 	OAuthPassThru  bool   `json:"oauthPassThru"` // must be true for Grafana to forward the user's token
 	OAuthTokenType string `json:"oauthTokenType"`
 
-	MessagesPath     string   `json:"messagesPath"`
-	ModelsPath       string   `json:"modelsPath"`
-	AnthropicVersion string   `json:"anthropicVersion"`
-	DefaultModel     string   `json:"defaultModel"`
-	AllowedModels    []string `json:"allowedModels"`
-	MaxTokens        int      `json:"maxTokens"`
-	TimeoutSeconds   int      `json:"timeoutSeconds"`
+	MessagesPath     string `json:"messagesPath"`
+	ModelsPath       string `json:"modelsPath"`
+	AnthropicVersion string `json:"anthropicVersion"`
+	DefaultModel     string `json:"defaultModel"`
+	// AllowedModels: model names or globs (path.Match, e.g. "claude-*"). With discovery on they
+	// filter the endpoint's list; with discovery off they are the list.
+	AllowedModels []string `json:"allowedModels"`
+	// ModelDiscovery: "endpoint" (default) offers the models the endpoint lists at ModelsPath for
+	// the caller's credentials; "off" offers only DefaultModel and AllowedModels.
+	ModelDiscovery string `json:"modelDiscovery"`
+	MaxTokens      int    `json:"maxTokens"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+	// TLSCACertFile: optional path to a PEM bundle (e.g. a mounted ConfigMap) trusted in addition
+	// to the system roots, for internal gateways and MCP servers. Read when the datasource loads.
+	TLSCACertFile string `json:"tlsCACertFile"`
 	// Optional extra static headers sent upstream (e.g. LiteLLM tags). Values are not secret.
 	ExtraHeaders map[string]string `json:"extraHeaders"`
 
@@ -179,6 +190,9 @@ func (s *PluginSettings) applyDefaults() {
 	if s.DefaultModel == "" {
 		s.DefaultModel = DefaultModel
 	}
+	if s.ModelDiscovery != ModelDiscoveryOff {
+		s.ModelDiscovery = ModelDiscoveryEndpoint
+	}
 	if s.MaxTokens <= 0 {
 		s.MaxTokens = DefaultMaxTokens
 	}
@@ -261,23 +275,39 @@ func (s *PluginSettings) Validate() error {
 	return nil
 }
 
-// Models returns the models the frontend may request, default first.
+// IsGlob reports whether an AllowedModels entry is a pattern rather than a model name.
+func IsGlob(p string) bool { return strings.ContainsAny(p, "*?[") }
+
+// Models returns the configured models (default first, patterns skipped): the list offered when
+// discovery is off or the endpoint cannot list models.
 func (s *PluginSettings) Models() []string {
 	out := []string{s.DefaultModel}
 	for _, m := range s.AllowedModels {
-		if m != s.DefaultModel {
+		if m != s.DefaultModel && !IsGlob(m) {
 			out = append(out, m)
 		}
 	}
 	return out
 }
 
-// IsModelAllowed reports whether the frontend may request this model.
-func (s *PluginSettings) IsModelAllowed(m string) bool {
-	for _, x := range s.Models() {
-		if x == m {
+// MatchesAllowed reports whether m matches an AllowedModels name or pattern. An empty list
+// matches everything (used as the discovery filter).
+func (s *PluginSettings) MatchesAllowed(m string) bool {
+	if len(s.AllowedModels) == 0 {
+		return true
+	}
+	for _, p := range s.AllowedModels {
+		if p == m {
+			return true
+		}
+		if ok, _ := path.Match(p, m); ok && IsGlob(p) {
 			return true
 		}
 	}
 	return false
+}
+
+// IsModelAllowed reports whether a model is allowed by configuration alone (discovery off).
+func (s *PluginSettings) IsModelAllowed(m string) bool {
+	return m == s.DefaultModel || (len(s.AllowedModels) > 0 && s.MatchesAllowed(m))
 }

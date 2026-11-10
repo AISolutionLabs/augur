@@ -1,6 +1,8 @@
 import React, { ChangeEvent } from 'react';
-import { Alert, Button, Field, FieldSet, InlineSwitch, Input, RadioButtonGroup, SecretInput, Switch, TagsInput, Stack } from '@grafana/ui';
+import { Alert, Button, Field, FieldSet, InlineSwitch, Input, RadioButtonGroup, SecretInput, SecretTextArea, Switch, TagsInput, Stack } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
+import { getBackendSrv } from '@grafana/runtime';
+import { lastValueFrom } from 'rxjs';
 import { ApiFormat, ApiKeyHeader, AuthMethod, ClaudeDataSourceOptions, ClaudeSecureJsonData, McpAuth, McpServerConfig, OAuthTokenType } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<ClaudeDataSourceOptions, ClaudeSecureJsonData> {}
@@ -150,7 +152,15 @@ export function ConfigEditor(props: Props) {
 
       <McpSection {...props} />
 
+      <TlsSection {...props} />
+
       <FieldSet label="Model">
+        <Field
+          label="Discover models from the endpoint"
+          description={`List the models ${jsonData.modelsPath ?? '/v1/models'} returns for the caller's credentials (a LiteLLM key or the user's own OAuth token), so users only see models they can use. Off: only the models below.`}
+        >
+          <Switch value={jsonData.modelDiscovery !== 'off'} onChange={(e) => setJson({ modelDiscovery: e.currentTarget.checked ? undefined : 'off' })} />
+        </Field>
         <Field label="Default model" description="Model name as your endpoint knows it (LiteLLM model alias or Anthropic model ID)">
           <Input
             width={40}
@@ -159,9 +169,17 @@ export function ConfigEditor(props: Props) {
             onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ defaultModel: e.target.value || undefined })}
           />
         </Field>
-        <Field label="Other allowed models" description="Users can pick these in the chat; anything else is rejected server-side">
+        <Field
+          label={jsonData.modelDiscovery === 'off' ? 'Other allowed models' : 'Model filter'}
+          description={
+            jsonData.modelDiscovery === 'off'
+              ? 'Names users can pick in the chat; patterns like claude-* allow matching names. Anything else is rejected server-side.'
+              : 'Optional names or patterns (claude-*, *sonnet*) limiting the discovered list. Empty: every chat model the endpoint lists. Requests for other models are rejected server-side.'
+          }
+        >
           <TagsInput tags={jsonData.allowedModels ?? []} onChange={(tags) => setJson({ allowedModels: tags })} width={60} />
         </Field>
+        <ModelPreview uid={props.options.uid} saved={!!props.options.id && !!props.options.version} />
         <Field label="Max output tokens" description="Upper bound per response (default 8192)">
           <Input
             type="number"
@@ -297,6 +315,100 @@ function McpSection({ options, onOptionsChange }: Props) {
       <Button variant="secondary" icon="plus" onClick={() => setServers([...servers, { name: '', url: '', auth: 'none', requireApproval: true }])}>
         Add MCP server
       </Button>
+    </FieldSet>
+  );
+}
+
+interface ModelList {
+  defaultModel: string;
+  models: Array<{ id: string; name?: string }>;
+  source: 'endpoint' | 'config';
+  warning?: string;
+}
+
+/** Shows what the chat will offer, as the saved datasource sees it with your credentials. */
+function ModelPreview({ uid, saved }: { uid: string; saved: boolean }) {
+  const [state, setState] = React.useState<{ loading?: boolean; list?: ModelList; error?: string }>({});
+  const load = async () => {
+    setState({ loading: true });
+    try {
+      const res = await lastValueFrom(getBackendSrv().fetch<ModelList>({ url: `/api/datasources/uid/${uid}/resources/models`, params: { refresh: '1' }, showErrorAlert: false }));
+      setState({ list: res.data });
+    } catch (e) {
+      const err = e as { data?: { error?: { message?: string }; message?: string }; status?: number };
+      setState({ error: err.data?.error?.message ?? err.data?.message ?? `HTTP ${err.status ?? '?'}` });
+    }
+  };
+  return (
+    <Field label="Models offered in the chat" description={saved ? 'Uses the saved settings; save first after changing them.' : 'Save the datasource first.'}>
+      <Stack direction="column" gap={1}>
+        <div>
+          <Button size="sm" variant="secondary" icon="sync" onClick={load} disabled={!saved || state.loading}>
+            {state.loading ? 'Loading…' : 'Show models'}
+          </Button>
+        </div>
+        {state.error && <Alert severity="error" title="Could not list models">{state.error}</Alert>}
+        {state.list?.warning && <Alert severity="warning" title="">{state.list.warning}</Alert>}
+        {state.list && (
+          <div data-testid="augur-model-preview">
+            {state.list.source === 'endpoint' ? 'From the endpoint' : 'From this configuration'} ({state.list.models.length}):{' '}
+            {state.list.models.map((m) => (m.name && m.name !== m.id ? `${m.id} (${m.name})` : m.id)).join(', ')}
+          </div>
+        )}
+      </Stack>
+    </Field>
+  );
+}
+
+/** CA certificates for internal gateways and MCP servers (e.g. LiteLLM behind a corporate CA). */
+function TlsSection({ options, onOptionsChange }: Props) {
+  const { jsonData, secureJsonFields, secureJsonData } = options;
+  const setJson = (patch: Partial<ClaudeDataSourceOptions>) => onOptionsChange({ ...options, jsonData: { ...jsonData, ...patch } });
+  return (
+    <FieldSet label="TLS">
+      <Field
+        label="Add CA certificate"
+        description="Trust an internal CA (PEM) for the endpoint and MCP servers, in addition to the system roots. Use this instead of skipping verification."
+      >
+        <Switch value={!!jsonData.tlsAuthWithCACert} onChange={(e) => setJson({ tlsAuthWithCACert: e.currentTarget.checked || undefined })} />
+      </Field>
+      {jsonData.tlsAuthWithCACert && (
+        <Field label="CA certificate (PEM)">
+          <SecretTextArea
+            rows={6}
+            cols={64}
+            isConfigured={!!secureJsonFields?.tlsCACert}
+            value={secureJsonData?.tlsCACert ?? ''}
+            placeholder={'-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----'}
+            onReset={() =>
+              onOptionsChange({ ...options, secureJsonFields: { ...secureJsonFields, tlsCACert: false }, secureJsonData: { ...secureJsonData, tlsCACert: '' } })
+            }
+            onChange={(e) => onOptionsChange({ ...options, secureJsonData: { ...secureJsonData, tlsCACert: e.currentTarget.value } })}
+          />
+        </Field>
+      )}
+      <Field
+        label="CA bundle file"
+        description="Or a PEM file on the Grafana server, e.g. a ConfigMap mounted into the pod (/etc/ssl/internal/ca.pem). Read when the datasource is saved or Grafana restarts."
+      >
+        <Input
+          width={60}
+          value={jsonData.tlsCACertFile ?? ''}
+          placeholder="/etc/ssl/internal/ca.pem"
+          onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ tlsCACertFile: e.target.value || undefined })}
+        />
+      </Field>
+      <Field label="Server name" description="Optional TLS server name (SNI) if it differs from the URL host">
+        <Input width={40} value={jsonData.serverName ?? ''} onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ serverName: e.target.value || undefined })} />
+      </Field>
+      <Field label="Skip TLS verification" description="Insecure: accepts any certificate. Prefer adding the CA above.">
+        <Switch value={!!jsonData.tlsSkipVerify} onChange={(e) => setJson({ tlsSkipVerify: e.currentTarget.checked || undefined })} />
+      </Field>
+      {jsonData.tlsSkipVerify && (
+        <Alert severity="warning" title="TLS verification is off">
+          Credentials and prompts are sent to whatever answers at this address. Add your CA certificate instead.
+        </Alert>
+      )}
     </FieldSet>
   );
 }

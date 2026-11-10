@@ -80,7 +80,11 @@ export function listClaudeDataSources(): DataSourceInfo[] {
 
 export interface ClaudeDsConfig {
   defaultModel: string;
+  /** Models this user may pick: discovered from the endpoint for their credentials, or configured. */
   models: string[];
+  modelNames?: Record<string, string>;
+  modelSource?: 'endpoint' | 'config';
+  modelWarning?: string;
   maxTokens: number;
   authMethod: string;
   mcpServers?: string[];

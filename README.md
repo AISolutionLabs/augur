@@ -178,7 +178,8 @@ The docked sidebar uses Grafana's extension sidebar. On Grafana versions without
 | API format | **Claude Messages** (default) or **OpenAI-compatible** (Chat Completions; Azure path and `?api-version=` go in *Messages path*) |
 | Auth: **API key** | Encrypted. Sent as `Authorization: Bearer` (LiteLLM, OpenAI), `x-api-key` (Anthropic) or `api-key` (Azure). |
 | Auth: **Forward OAuth token** | Each user's own access token or ID token. Requires Grafana login via OAuth/OIDC. |
-| Models | Default and allowed models; anything else is rejected server-side. |
+| Models | **Discovered** from the endpoint's `/v1/models` with the caller's credentials (so a LiteLLM key or user token only sees its own models), optionally narrowed by a filter (`claude-*`). Requests for anything else are rejected server-side. Turn discovery off to use a fixed list. *Show models* previews what users will get. |
+| TLS | **Add CA certificate** (PEM, encrypted) and/or a **CA bundle file** path (e.g. a mounted ConfigMap): trusted *in addition to* the system roots, for both the endpoint and MCP servers. Skip verification is available but not recommended. |
 | MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, read-only tool globs, role required for other tools, and approval policy. |
 
 ```yaml
@@ -193,7 +194,8 @@ datasources:
       oauthPassThru: true
       oauthTokenType: access       # or id
       defaultModel: claude-sonnet-5-5
-      allowedModels: [claude-opus-5-5, claude-haiku-5-5]
+      allowedModels: ['claude-*']   # filter for the discovered list (modelDiscovery: off for a fixed list)
+      tlsCACertFile: /etc/ssl/internal/ca.pem   # internal CA, mounted into the Grafana pod
       mcpServers:
         - name: github
           url: https://mcp.example.internal/github/mcp
@@ -208,6 +210,18 @@ datasources:
     secureJsonData:
       mcpToken_github: ${GITHUB_MCP_TOKEN}
 ```
+
+**Internal CA on Kubernetes:** mount your CA bundle into the Grafana pod and point `tlsCACertFile` at it, instead of `tlsSkipVerify`. With the Grafana Helm chart:
+
+```yaml
+extraConfigmapMounts:
+  - name: internal-ca
+    configMap: internal-ca        # contains ca.pem
+    mountPath: /etc/ssl/internal
+    readOnly: true
+```
+
+Or paste the PEM into *Add CA certificate* (`jsonData.tlsAuthWithCACert: true` + `secureJsonData.tlsCACert`). Either way the system roots stay trusted, so public endpoints and MCP servers keep working. *Save & test* reports an unreadable or invalid CA.
 
 **Forwarding Entra ID tokens to LiteLLM:** add your gateway's API scope to Grafana's OAuth scopes (`[auth.azuread] scopes = openid email profile offline_access api://<litellm-app-id>/.default`) so the access token's audience is the gateway. Alternatively, forward the ID token (its audience is Grafana's client ID). Then validate the token in LiteLLM against your tenant's JWKS and map its claims to teams. If no token is forwarded, requests fail with a clear 401; Augur never falls back to a shared key.
 

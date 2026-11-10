@@ -3,11 +3,14 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -38,6 +41,8 @@ type Datasource struct {
 	settings *models.PluginSettings
 	client   *http.Client
 	mcp      *mcpClient
+	models   modelCache
+	tlsErr   error // custom CA could not be loaded (reported by CheckHealth)
 	resource backend.CallResourceHandler
 	logger   log.Logger
 }
@@ -54,6 +59,22 @@ func NewDatasource(ctx context.Context, instance backend.DataSourceInstanceSetti
 	opts, optErr := instance.HTTPClientOptions(ctx)
 	if optErr != nil {
 		return nil, fmt.Errorf("http client options: %w", optErr)
+	}
+	// Custom CAs are added to the system roots (the SDK would replace them, breaking public MCP
+	// servers): the inline PEM from "Add CA certificate" and/or a mounted bundle file.
+	inlineCA := ""
+	if opts.TLS != nil {
+		inlineCA, opts.TLS.CACertificate = opts.TLS.CACertificate, ""
+	}
+	roots, caErr := rootCAs(inlineCA, settings.TLSCACertFile)
+	if caErr != nil {
+		ds.tlsErr = caErr
+		ds.logger.Warn("Custom CA certificates not loaded", "error", caErr.Error())
+	}
+	opts.ConfigureTLSConfig = func(_ httpclient.Options, c *tls.Config) {
+		if roots != nil {
+			c.RootCAs = roots
+		}
 	}
 	// Per-request timeouts are applied with contexts; keep transport defaults for TLS/proxy/CA settings.
 	opts.Timeouts.Timeout = 0
@@ -72,6 +93,7 @@ func NewDatasource(ctx context.Context, instance backend.DataSourceInstanceSetti
 	mux := http.NewServeMux()
 	mux.HandleFunc("/messages", ds.handleMessages)
 	mux.HandleFunc("/config", ds.handleConfig)
+	mux.HandleFunc("/models", ds.handleModels)
 	mux.HandleFunc("/mcp/tools", ds.handleMCPTools)
 	mux.HandleFunc("/mcp/call", ds.handleMCPCall)
 	ds.resource = httpadapter.New(mux)
@@ -246,7 +268,7 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	model := d.settings.DefaultModel
 	if in.Model != "" {
-		if !d.settings.IsModelAllowed(in.Model) {
+		if !d.modelAllowed(r.Context(), r.Header, in.Model) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed by this datasource", in.Model))
 			return
 		}
@@ -327,12 +349,15 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 // ---- /config -------------------------------------------------------------
 
 type publicConfig struct {
-	DefaultModel string   `json:"defaultModel"`
-	Models       []string `json:"models"`
-	MaxTokens    int      `json:"maxTokens"`
-	AuthMethod   string   `json:"authMethod"`
-	APIFormat    string   `json:"apiFormat"`
-	MCPServers   []string `json:"mcpServers"`
+	DefaultModel string            `json:"defaultModel"`
+	Models       []string          `json:"models"`
+	ModelNames   map[string]string `json:"modelNames,omitempty"`
+	ModelSource  string            `json:"modelSource"`
+	ModelWarning string            `json:"modelWarning,omitempty"`
+	MaxTokens    int               `json:"maxTokens"`
+	AuthMethod   string            `json:"authMethod"`
+	APIFormat    string            `json:"apiFormat"`
+	MCPServers   []string          `json:"mcpServers"`
 }
 
 // handleConfig exposes the non-secret settings the chat UI needs.
@@ -346,9 +371,21 @@ func (d *Datasource) handleConfig(w http.ResponseWriter, r *http.Request) {
 	for _, m := range d.settings.MCPServers {
 		names = append(names, m.Name)
 	}
+	listing := d.availableModels(r.Context(), r.Header)
+	ids := make([]string, 0, len(listing.models))
+	labels := map[string]string{}
+	for _, m := range listing.models {
+		ids = append(ids, m.ID)
+		if m.Name != "" {
+			labels[m.ID] = m.Name
+		}
+	}
 	_ = json.NewEncoder(w).Encode(publicConfig{
 		DefaultModel: d.settings.DefaultModel,
-		Models:       d.settings.Models(),
+		Models:       ids,
+		ModelNames:   labels,
+		ModelSource:  listing.source,
+		ModelWarning: listing.warning,
 		MaxTokens:    d.settings.MaxTokens,
 		AuthMethod:   d.settings.AuthMethod,
 		APIFormat:    d.settings.APIFormat,
@@ -363,6 +400,9 @@ func (d *Datasource) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	if err := d.settings.Validate(); err != nil {
 		return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
+	}
+	if d.tlsErr != nil {
+		return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: "CA certificate: " + d.tlsErr.Error()}, nil
 	}
 	incoming := http.Header{}
 	for k, v := range req.Headers {
@@ -423,4 +463,28 @@ func redact(s string) string {
 		}
 	}
 	return s
+}
+
+// rootCAs returns the system roots plus the given PEM CAs, or nil when none are configured.
+func rootCAs(inlinePEM, file string) (*x509.CertPool, error) {
+	if strings.TrimSpace(inlinePEM) == "" && file == "" {
+		return nil, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if strings.TrimSpace(inlinePEM) != "" && !pool.AppendCertsFromPEM([]byte(inlinePEM)) {
+		return nil, fmt.Errorf("the CA certificate is not valid PEM")
+	}
+	if file != "" {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("could not read CA file: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(b) {
+			return nil, fmt.Errorf("no PEM certificates in %s", file)
+		}
+	}
+	return pool, nil
 }

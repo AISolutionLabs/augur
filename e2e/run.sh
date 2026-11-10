@@ -32,6 +32,8 @@ export GRAFANA_URL=http://localhost:3000
 curl -sf "$GRAFANA_URL/api/plugins/augur-assistant-app/settings" | grep -q '"enabled":true' && echo "✓ Augur app enabled" || { echo "✗ Augur app not loaded"; docker compose logs stack | tail -50; exit 1; }
 curl -sf "$GRAFANA_URL/api/datasources/uid/augur-e2e/health" | grep -q '"status":"OK"' && echo "✓ Augur datasource backend healthy" || { echo "✗ Augur datasource health check failed"; curl -s "$GRAFANA_URL/api/datasources/uid/augur-e2e/health"; exit 1; }
 
+curl -sf "$GRAFANA_URL/api/datasources/uid/augur-e2e/resources/config" | grep -q '"models":\["stub-model"\],"modelNames":{"stub-model":"Stub model"},"modelSource":"endpoint"' && echo "✓ models discovered from the endpoint (embeddings filtered)" || { echo "✗ model discovery"; curl -s "$GRAFANA_URL/api/datasources/uid/augur-e2e/resources/config"; exit 1; }
+
 echo; echo "== headless, model called directly"
 STUB_URL=http://127.0.0.1:8787 node smoke.mjs
 echo; echo "== headless, model through the Augur datasource backend"

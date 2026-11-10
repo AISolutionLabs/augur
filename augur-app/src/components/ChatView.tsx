@@ -171,7 +171,13 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
         <Combobox width={22} options={s.claudeDs.map((d) => ({ label: d.name, value: d.uid }))} value={s.dsUid} onChange={(v) => s.setDsUid(v.value)} aria-label="Claude datasource" />
       )}
       {s.dsConfig && s.dsConfig.models.length > 1 && variant === 'page' && (
-        <Combobox width={24} options={s.dsConfig.models.map((m) => ({ label: m, value: m }))} value={s.model} onChange={(v) => s.setModel(v.value)} aria-label="Model" />
+        <Combobox
+          width={28}
+          options={s.dsConfig.models.map((m) => ({ label: s.dsConfig?.modelNames?.[m] ?? m, value: m, description: s.dsConfig?.modelNames?.[m] ? m : undefined }))}
+          value={s.model}
+          onChange={(v) => s.setModel(v.value)}
+          aria-label="Model"
+        />
       )}
       <Combobox width={variant === 'sidebar' ? 16 : 18} options={RANGES} value={session.rangeKey} onChange={(v) => s.setRangeKey(v.value)} aria-label="Time range" />
       <Dropdown overlay={historyMenu}>

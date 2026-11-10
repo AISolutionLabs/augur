@@ -15,10 +15,11 @@ services:
       - '4318:4318'
     environment:
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: augur-assistant-app,augur-claude-datasource
-      GF_PATHS_PLUGINS: /var/lib/grafana-plugins
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
-      - ../augur-app/dist:/var/lib/grafana-plugins/augur-assistant-app
-      - ../augur-datasource/dist:/var/lib/grafana-plugins/augur-claude-datasource
+      # otel-lgtm's startup script sets GF_PATHS_PLUGINS=/data/grafana/plugins itself (overriding
+      # anything set here), so the plugins go there.
+      - ../augur-app/dist:/data/grafana/plugins/augur-assistant-app:ro
+      - ../augur-datasource/dist:/data/grafana/plugins/augur-claude-datasource:ro
       - ./provisioning/datasources/augur.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/augur.yaml
       - ./provisioning/plugins/augur.yaml:/otel-lgtm/grafana/conf/provisioning/plugins/augur.yaml

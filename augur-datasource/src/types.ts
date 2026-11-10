@@ -22,6 +22,14 @@ export interface ClaudeDataSourceOptions extends DataSourceJsonData {
   anthropicVersion?: string;
   defaultModel?: string;
   allowedModels?: string[];
+  /** Grafana's standard TLS settings (read by the plugin SDK). */
+  tlsSkipVerify?: boolean;
+  tlsAuthWithCACert?: boolean;
+  serverName?: string;
+  /** PEM bundle on disk (e.g. a mounted ConfigMap), trusted in addition to the system roots. */
+  tlsCACertFile?: string;
+  /** 'endpoint' (default): offer the models the endpoint lists for the caller; 'off': only the configured ones. */
+  modelDiscovery?: 'endpoint' | 'off';
   maxTokens?: number;
   timeoutSeconds?: number;
   extraHeaders?: Record<string, string>;
@@ -44,6 +52,7 @@ export interface McpServerConfig {
 
 export interface ClaudeSecureJsonData {
   apiKey?: string;
+  tlsCACert?: string;
   /** mcpToken_<server name> */
   [key: string]: string | undefined;
 }

@@ -32,11 +32,12 @@ createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    if (req.method === 'GET' && req.url.endsWith('/models')) {
-      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'stub-model', type: 'model' }] }));
+    const path = new URL(req.url, 'http://stub').pathname;
+    if (req.method === 'GET' && path.endsWith('/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ data: [{ id: 'stub-model', type: 'model', display_name: 'Stub model' }, { id: 'text-embedding-stub', type: 'model' }], has_more: false }));
       return;
     }
-    if (req.method !== 'POST' || !req.url.endsWith('/messages')) {
+    if (req.method !== 'POST' || !path.endsWith('/messages')) {
       res.writeHead(404).end('{"error":{"message":"not found"}}');
       return;
     }

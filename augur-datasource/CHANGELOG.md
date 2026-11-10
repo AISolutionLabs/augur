@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- Models are discovered from the endpoint's `/v1/models` (Anthropic paging and OpenAI/LiteLLM shapes) using the caller's credentials, cached per credential for 5 minutes; non-chat models (embeddings, audio, image) are dropped; `allowedModels` now accepts patterns (`claude-*`) and filters the list; requests for undiscovered models are rejected. Falls back to the configured list if the endpoint can't list models. `modelDiscovery: off` restores a fixed list. New `/models` resource and a *Show models* preview in the config editor.
+- Internal CAs: *Add CA certificate* (PEM) and a CA bundle file path (`tlsCACertFile`, e.g. a mounted ConfigMap) are trusted in addition to the system roots, for the endpoint and MCP servers; invalid or unreadable CAs are reported by *Save & test*. TLS settings (CA, server name, skip verify) are now in the config editor.
+
 ## 1.4.0
 
 - Covered by the new end-to-end tests: plugin loading on Grafana 13, health check and the Messages proxy path against a stub model.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- Model picker shows the models the endpoint offers to you (with display names), instead of a hardcoded list.
+- Demo `deploy/docker-compose.yaml`: plugins mounted at `/data/grafana/plugins` (current `grafana/otel-lgtm` overrides `GF_PATHS_PLUGINS`); CI now checks the demo loads both plugins.
+
 ## 1.4.0
 
 - Headless runner (`npm run build:headless`): the same agent, tools and prompts outside the browser, against Grafana's HTTP API with a service-account token; model through an Augur datasource or a Messages endpoint directly; ATIF trajectory output; proposals applied only with `AUGUR_APPLY=auto`.
