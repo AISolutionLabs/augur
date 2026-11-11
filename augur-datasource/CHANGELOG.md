@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+
+- Repository moved to [AniAIApps/augur](https://github.com/AniAIApps/augur): plugin links and the Go module path updated. No functional changes.
+
 ## 1.5.0
 
 - Models are discovered from the endpoint's `/v1/models` (Anthropic paging and OpenAI/LiteLLM shapes) using the caller's credentials, cached per credential for 5 minutes; non-chat models (embeddings, audio, image) are dropped; `allowedModels` now accepts patterns (`claude-*`) and filters the list; requests for undiscovered models are rejected. Falls back to the configured list if the endpoint can't list models. `modelDiscovery: off` restores a fixed list. New `/models` resource and a *Show models* preview in the config editor.
