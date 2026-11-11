@@ -170,6 +170,7 @@ class AugurStore {
       status: '',
       usage: ZERO_USAGE,
     };
+    this.published = this.state;
   }
 
   // ---- subscription ------------------------------------------------------------
@@ -179,7 +180,13 @@ class AugurStore {
     return () => this.listeners.delete(l);
   };
 
-  getState = () => this.state;
+  // React reads `published`, which only changes when listeners are notified. Internally the store
+  // works on `this.state`, which can change at any time; if React's snapshot followed it, a change
+  // in the middle of a time-sliced render would make React re-render the whole Grafana page
+  // synchronously (useSyncExternalStore tearing protection), over and over during a run, until it
+  // aborted with error #185.
+  private published!: StoreState;
+  getState = () => this.published;
 
   private set(patch: Partial<StoreState>) {
     this.state = { ...this.state, ...patch };
@@ -187,15 +194,18 @@ class AugurStore {
       this.scheduleNotify();
     } else {
       // User actions and the end of a run render right away.
-      this.notifyPending = false;
-      this.listeners.forEach((l) => l());
+      this.notifyNow();
     }
   }
 
-  // During a run, listeners (React via useSyncExternalStore) are notified at most once per frame. Every
-  // notification is a synchronous re-render of the whole Grafana page, and a fast run can change
-  // the state dozens of times in a few milliseconds; unbatched, that burst made React abort with
-  // error #185 (too many nested updates) in Grafana 13. getState() always returns the latest state.
+  private notifyNow() {
+    this.notifyPending = false;
+    this.published = this.state;
+    this.listeners.forEach((l) => l());
+  }
+
+  // During a run, React is notified at most once per frame: a fast run changes the state dozens of
+  // times in a few milliseconds, and each notification re-renders the page.
   private notifyPending = false;
   private scheduleNotify() {
     if (this.notifyPending) {
@@ -203,11 +213,9 @@ class AugurStore {
     }
     this.notifyPending = true;
     const flush = () => {
-      if (!this.notifyPending) {
-        return;
+      if (this.notifyPending) {
+        this.notifyNow();
       }
-      this.notifyPending = false;
-      this.listeners.forEach((l) => l());
     };
     // requestAnimationFrame pauses in background tabs, so a timer backs it up.
     if (typeof requestAnimationFrame === 'function') {

@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Chat auto-scroll jumps instead of animating, and only follows new messages while you are at the bottom (it no longer pulls you down while reading earlier output).
-- Fix: intermittent React error #185 ("maximum update depth exceeded") during chat runs on Grafana 13. The session store notified React synchronously on every change, so a fast run forced dozens of synchronous re-renders of the whole Grafana page in a burst. Updates during a run are now delivered at most once per frame; user actions still render immediately.
+- Fix: intermittent React error #185 ("maximum update depth exceeded") during chat runs on Grafana 13. The session store's snapshot (read by React's useSyncExternalStore) changed on every internal update, so state changes landing in the middle of Grafana's time-sliced renders made React re-render the whole page synchronously, repeatedly, until it aborted. React now gets a stable snapshot that only changes when it is notified, at most once per frame during a run; user actions still render immediately.
 - E2E: the browser pass runs 5 times in CI with a React commit probe, and a control experiment (without Augur, Augur idle, Augur page open) runs alongside; any update loop during an Augur run fails the test. Results are also published to the `ci-results` branch.
 - Augur at the top level of the menu (between Drilldown and Alerting) in the demo and the documented install config (`[navigation.app_sections] augur-assistant-app = root -3450`); CI checks the menu placement.
 

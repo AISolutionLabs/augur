@@ -19,9 +19,11 @@ describe('store notifications', () => {
       store.set({ status: `step ${i}` });
     }
     expect(listener).not.toHaveBeenCalled();
-    expect(store.getState().status).toBe('step 59'); // reads are never stale
+    // React's snapshot only moves when listeners are notified (no mid-render changes).
+    expect(store.getState().status).not.toBe('step 59');
     await new Promise((r) => setTimeout(r, 80));
     expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getState().status).toBe('step 59');
   });
 
   it('notifies immediately outside a run, and when a run ends', () => {
