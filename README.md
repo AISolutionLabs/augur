@@ -87,7 +87,7 @@ There are two plugins because Grafana only forwards a user's OAuth token to *dat
 
 | Area | Tools |
 |---|---|
-| Discovery | `list_datasources`, `search_dashboards`, `get_dashboard`, `list_folders`, `get_infrastructure_memory` |
+| Discovery | `grafana_capabilities`, `list_datasources`, `search_dashboards`, `get_dashboard`, `list_folders`, `get_infrastructure_memory` |
 | Metrics | `prometheus_metric_names`, `prometheus_labels`, `query_prometheus` |
 | Logs | `loki_labels`, `query_loki`, `loki_patterns` |
 | Traces | `tempo_tag_values`, `search_traces`, `get_trace` |
@@ -95,8 +95,20 @@ There are two plugins because Grafana only forwards a user's OAuth token to *dat
 | Grafana | `run_panel_queries`, `list_alerts`, `alert_state_history`, `get_annotations`, `list_silences` |
 | Knowledge | `search_skills`, `read_skill`, `search_past_investigations`, `read_past_investigation` |
 | Investigation | `delegate` (parallel sub-agents), `update_hypothesis`, `record_finding` |
-| Proposals (user applies) | `draft_dashboard`, `propose_dashboard_edit` (panels, variables, and query annotations such as deploy markers from logs), `draft_silence`, `draft_alert_rule` |
+| Proposals (user applies) | `draft_dashboard`, `revise_draft`, `propose_dashboard_edit` (panels, variables, and query annotations such as deploy markers from logs), `draft_silence`, `draft_alert_rule` |
 | MCP | `mcp__<server>__<tool>` for every tool your MCP servers expose |
+
+**It knows your Grafana.** At the start of each run Augur reads the installed and enabled plugins (`/api/plugins`) and the Grafana version, and tells the model which apps (Drilldown, SLO, IRM, k6, Asserts…), datasource types and panel types this instance actually has. It links to installed apps (for example *Metrics Drilldown* for a metric) and never to ones that aren't there. `grafana_capabilities` gives the full list, including versions, on demand.
+
+### Building dashboards
+
+`draft_dashboard` turns a short spec into a complete, modern Grafana dashboard. Nothing is saved until you click.
+
+- **Live preview.** The draft card renders the dashboard with real Grafana panels and real data from the last hour (variables set to all values), so you see what you'd get before saving. Collapsed rows and very large drafts are summarised.
+- **Current Grafana defaults.** Time series with gradient fills and smooth lines, table legends with mean/max/last, stat rows that span the width, value and range mappings, per-series overrides (color, axis, unit, stacking), thresholds as lines or areas, data links, repeat-by-variable, collapsed detail rows, and the newer panel types (state timeline, status history, histogram, flame graph). Panel types that aren't installed fall back with a warning.
+- **Automatic fixes.** Fixed rate windows become `$__rate_interval`, units are inferred from metric names (`_seconds`, `_bytes`, `_total`, error ratios…), and common mistakes are flagged: raw counters without `rate()`, histogram buckets without `histogram_quantile`, a missing `le`, log queries in metric panels, panels with too many series.
+- **Every query is dry-run** before you see the draft; empty or failing panels are reported to the model and to you.
+- **Iterate in conversation.** "Make the latency panel a heatmap and add a pod breakdown" calls `revise_draft`, which changes only those panels. Each revision is numbered; if you saved an earlier one, **Update saved dashboard** overwrites it (or **Save as new** keeps both).
 
 ### How investigations work
 
@@ -140,6 +152,8 @@ The conversation is kept under a **token budget** (140k by default, estimated co
 ### Durability
 
 The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Only one tab drives a run at a time: other tabs see *Running in another tab* and take over automatically if that tab goes away (a 12-second lease). Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
+
+Up to three conversations can run at once, each with its own lease, so you can start an investigation, switch to another conversation, and come back to it.
 
 ### Models
 
@@ -262,8 +276,8 @@ apps:
 
 - **Sidebar:** open Augur from Grafana's sidebar on any dashboard, Explore or alert page and ask "what's wrong here?". It knows the page you're on.
 - **Panel menu:** *Ask Augur about this panel* / *Investigate with Augur*. **Explore toolbar:** *Ask Augur*. **Alert rules and instances:** *Investigate with Augur*. **Command palette:** *Ask Augur*.
-- **Investigate** mode shows live hypotheses and findings. Finish with **Save to Grafana**, which saves a dashboard containing the report, findings, hypotheses, evidence panels and annotations, using your folder permissions. Or use **Export report** (Markdown). Saved investigations become searchable memory for future ones.
-- **History:** previous conversations are available from the history menu, stored per browser.
+- **Investigate** mode shows live hypotheses and findings. Finish with **Save to Grafana**, which saves a dashboard containing the report, findings, hypotheses, evidence panels and annotations, using your folder permissions. Or export the report as **Markdown** or **PDF** (a print-ready report with the write-up, findings, hypotheses, evidence ledger and queries; choose *Save as PDF* in the print dialog). Saved investigations become searchable memory for future ones.
+- **Conversations:** chats and investigations are kept in a conversations list (a rail on the page, a list in the sidebar), with search, rename, pin and delete, grouped by Running, Pinned and date. Switching conversations doesn't stop a run: up to three run in parallel in the background, and conversations waiting for your approval are marked. The last 60 are kept per browser; when storage is tight, older transcripts are compacted before anything is dropped.
 
 ### Permissions
 

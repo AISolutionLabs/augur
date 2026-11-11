@@ -1,6 +1,6 @@
 import { buildDashboardDraft, saveDashboard, wildcardVars, DashboardSpec } from './dashboard';
 import { draftDashboardTool } from './tools/dashboards';
-import { ctxWith, fakeHttp, seriesResponse } from './testUtils';
+import { ctxWith, fakeHttp, seriesResponse, DATASOURCES } from './testUtils';
 
 const spec: DashboardSpec = {
   title: 'Checkout RED',
@@ -24,9 +24,9 @@ describe('dashboard builder', () => {
     expect(d.json.id).toBeNull();
     expect(d.json.tags).toContain('claude');
     expect(d.json.templating.list[0]).toMatchObject({ name: 'namespace', type: 'query', datasource: { uid: 'mimir', type: 'prometheus' } });
-    // two stats side by side on the first line
-    expect(panels[0].gridPos).toEqual({ h: 4, w: 6, x: 0, y: 0 });
-    expect(panels[1].gridPos).toEqual({ h: 4, w: 6, x: 6, y: 0 });
+    // two stats share the first line
+    expect(panels[0].gridPos).toEqual({ h: 4, w: 12, x: 0, y: 0 });
+    expect(panels[1].gridPos).toEqual({ h: 4, w: 12, x: 12, y: 0 });
     const rows = panels.filter((p) => p.type === 'row').map((p) => p.title);
     expect(rows).toEqual(['Latency', 'Logs', 'Traces']);
     const logs = panels.find((p) => p.title === 'Errors');
@@ -108,7 +108,7 @@ describe('dashboard builder', () => {
     const out = await draftDashboardTool((d) => drafts.push(d)).run({ ...spec }, ctxWith(http));
     expect(drafts).toHaveLength(1);
     expect(out).toMatch(/need attention/);
-    expect(out).toMatch(/call draft_dashboard again/);
+    expect(out).toMatch(/revise_draft/);
   });
 
   it('wildcards variables without touching Grafana macros', () => {
@@ -163,5 +163,209 @@ describe('query annotations', () => {
     expect(edit.json.annotations.list.map((a: any) => a.name)).toEqual(['Annotations & Alerts', 'Old', 'Deployments']);
     expect(edit.changes).toContain('+ add annotation "Deployments"');
     expect(edit.warnings).toContain('annotation "Old" already exists');
+  });
+});
+
+describe('dashboard builder v2', () => {
+  const { inferUnit, lintPanel, layout, buildPanel } = jest.requireActual('./dashboard');
+  const { applyRevision, reviseDraftTool, draftDashboardTool } = jest.requireActual('./tools/dashboards');
+
+  it('infers units from metric names', () => {
+    expect(inferUnit('histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))')).toBe('s');
+    expect(inferUnit('sum(rate(http_requests_total[5m]))')).toBe('reqps');
+    expect(inferUnit('sum(rate(kafka_messages_total[5m]))')).toBe('ops');
+    expect(inferUnit('sum(rate(container_network_receive_bytes_total[5m]))')).toBe('Bps');
+    expect(inferUnit('container_memory_working_set_bytes')).toBe('bytes');
+    expect(inferUnit('sum(rate(http_requests_total{code=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))')).toBe('percentunit');
+    expect(inferUnit('100 * sum(a) / sum(b)')).toBe('percent');
+    expect(inferUnit('sum(rate(container_cpu_usage_seconds_total[5m]))')).toBe('percentunit');
+    expect(inferUnit('up')).toBeUndefined();
+  });
+
+  it('fixes short rate windows and infers units; warns about raw counters, buckets and missing le', () => {
+    const r = lintPanel(
+      { title: 'RPS', type: 'timeseries', queries: [{ expr: 'sum(rate(http_requests_total[5m]))' }, { expr: 'sum(increase(x_total[1h]))' }] },
+      'prometheus'
+    );
+    expect(r.panel.queries[0].expr).toBe('sum(rate(http_requests_total[$__rate_interval]))');
+    expect(r.panel.queries[1].expr).toBe('sum(increase(x_total[1h]))'); // long windows are intentional
+    expect(r.panel.unit).toBe('reqps');
+    expect(r.fixes).toEqual(['panel "RPS": rate window → $__rate_interval', 'panel "RPS": unit reqps inferred from the metric name']);
+
+    expect(lintPanel({ title: 'Raw', type: 'stat', queries: [{ expr: 'http_requests_total' }] }, 'prometheus').warnings[0]).toMatch(/counter; wrap it in rate/);
+    expect(lintPanel({ title: 'B', type: 'timeseries', queries: [{ expr: 'sum(rate(lat_seconds_bucket[5m]))' }] }, 'prometheus').warnings[0]).toMatch(/histogram_quantile/);
+    expect(lintPanel({ title: 'Q', type: 'timeseries', queries: [{ expr: 'histogram_quantile(0.9, sum by (svc) (rate(lat_seconds_bucket[5m])))' }] }, 'prometheus').warnings[0]).toMatch(/needs "le"/);
+    expect(lintPanel({ title: 'H', type: 'heatmap', queries: [{ expr: 'sum by (le) (rate(lat_seconds_bucket[5m]))' }] }, 'prometheus').warnings).toEqual([]);
+    expect(lintPanel({ title: 'L', type: 'logs', queries: [{ expr: 'sum(count_over_time({app="x"}[5m]))' }] }, 'loki').warnings[0]).toMatch(/logs panels need a log query/);
+    expect(lintPanel({ title: 'L2', type: 'timeseries', queries: [{ expr: '{app="x"} |= "error"' }] }, 'loki').warnings[0]).toMatch(/LogQL metric query/);
+  });
+
+  it('lays out stats across the row, fills rows, equalises heights, and nests collapsed sections', () => {
+    let id = 100;
+    const mk = (spec: any) => ({ spec, json: { id: id++, type: spec.type, title: spec.title } });
+    const panels = [
+      mk({ title: 's1', type: 'stat' }),
+      mk({ title: 's2', type: 'stat' }),
+      mk({ title: 's3', type: 'stat' }),
+      mk({ title: 's4', type: 'stat' }),
+      mk({ title: 's5', type: 'stat' }),
+      mk({ title: 'a', type: 'timeseries', row: 'Traffic' }),
+      mk({ title: 'b', type: 'timeseries', row: 'Traffic', height: 10 }),
+      mk({ title: 'c', type: 'timeseries', row: 'Traffic' }),
+      mk({ title: 'd', type: 'table', row: 'Details' }),
+    ];
+    const { panels: out } = layout(panels, 0, () => id++, ['Details']);
+    const pos = (t: string) => out.find((p: any) => p.title === t)?.gridPos ?? out.flatMap((p: any) => p.panels ?? []).find((p: any) => p.title === t)?.gridPos;
+    // 5 stats share one row of 24 columns (4 each, last one takes the remainder).
+    expect([1, 2, 3, 4, 5].map((i) => pos(`s${i}`).w)).toEqual([4, 4, 4, 4, 8]);
+    expect(new Set([1, 2, 3, 4, 5].map((i) => pos(`s${i}`).y))).toEqual(new Set([0]));
+    // Two time series per line; a lone last one stretches to the full width.
+    expect(pos('a')).toMatchObject({ w: 12, x: 0, h: 10 }); // heights equalised within a line
+    expect(pos('b')).toMatchObject({ w: 12, x: 12, h: 10 });
+    expect(pos('c')).toMatchObject({ w: 24, x: 0 });
+    expect(pos('a').y).toBe(pos('b').y);
+    // Collapsed section: its panels live inside the row.
+    const details = out.find((p: any) => p.type === 'row' && p.title === 'Details');
+    expect(details).toMatchObject({ collapsed: true });
+    expect(details.panels.map((p: any) => p.title)).toEqual(['d']);
+    expect(out.find((p: any) => p.title === 'd')).toBeUndefined();
+  });
+
+  it('builds legends, overrides, mappings, links, repeats and modern defaults', () => {
+    const warnings: string[] = [];
+    const p = buildPanel(
+      {
+        title: 'Latency',
+        type: 'timeseries',
+        datasource_uid: 'mimir',
+        queries: [{ expr: 'x' }],
+        unit: 's',
+        legend: { mode: 'table', placement: 'right' },
+        threshold_style: 'line',
+        thresholds: [
+          { value: null, color: 'green' },
+          { value: 0.5, color: 'red' },
+        ],
+        overrides: [{ match: '.*error.*', regex: true, color: 'red', axis: 'right', unit: 'percentunit' }],
+        links: [{ title: 'Runbook', url: 'https://wiki/runbook' }],
+        repeat: '$service',
+        description: 'p95 by service',
+      },
+      7,
+      DATASOURCES,
+      warnings
+    );
+    expect(p.options.legend).toMatchObject({ displayMode: 'table', placement: 'right', calcs: ['mean', 'max', 'lastNotNull'] });
+    expect(p.fieldConfig.defaults.custom).toMatchObject({ thresholdsStyle: { mode: 'line' }, gradientMode: 'opacity', lineInterpolation: 'smooth' });
+    expect(p.fieldConfig.overrides[0]).toEqual({
+      matcher: { id: 'byRegexp', options: '.*error.*' },
+      properties: [
+        { id: 'unit', value: 'percentunit' },
+        { id: 'color', value: { mode: 'fixed', fixedColor: 'red' } },
+        { id: 'custom.axisPlacement', value: 'right' },
+      ],
+    });
+    expect(p.links).toEqual([{ title: 'Runbook', url: 'https://wiki/runbook' }]);
+    expect(p).toMatchObject({ repeat: 'service', repeatDirection: 'h' });
+
+    const stat = buildPanel({ title: 'Up', type: 'stat', datasource_uid: 'mimir', queries: [{ expr: 'up' }], mappings: [{ value: '1', text: 'Up', color: 'green' }, { from: 0, to: 0.5, text: 'Down', color: 'red' }], color_mode: 'background', sparkline: false }, 8, DATASOURCES, warnings);
+    expect(stat.options).toMatchObject({ colorMode: 'background', graphMode: 'none' });
+    expect(stat.fieldConfig.defaults.mappings).toEqual([
+      { type: 'value', options: { '1': { text: 'Up', color: 'green', index: 0 } } },
+      { type: 'range', options: { from: 0, to: 0.5, result: { text: 'Down', color: 'red', index: 1 } } },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('falls back to timeseries when a panel type is not installed', () => {
+    const warnings: string[] = [];
+    const p = buildPanel({ title: 'T', type: 'state-timeline', datasource_uid: 'mimir', queries: [{ expr: 'up' }] }, 1, DATASOURCES, warnings, new Set(['timeseries', 'stat']));
+    expect(p.type).toBe('timeseries');
+    expect(warnings[0]).toMatch(/not installed/);
+  });
+
+  it('builds flame graph panels for Pyroscope and heatmap-format bucket queries', () => {
+    const fg = buildPanel({ title: 'CPU', type: 'flamegraph', datasource_uid: 'pyro', queries: [{ label_selector: '{service_name="checkout"}' }] }, 1, [...DATASOURCES, { uid: 'pyro', name: 'Pyroscope', type: 'grafana-pyroscope-datasource' }], []);
+    expect(fg.targets[0]).toMatchObject({ queryType: 'profile', profileTypeId: 'process_cpu:cpu:nanoseconds:cpu:nanoseconds', labelSelector: '{service_name="checkout"}' });
+    const hm = buildPanel({ title: 'H', type: 'heatmap', datasource_uid: 'mimir', queries: [{ expr: 'sum by (le) (rate(x_bucket[$__rate_interval]))' }] }, 2, DATASOURCES, []);
+    expect(hm.targets[0]).toMatchObject({ format: 'heatmap', legendFormat: '{{le}}' });
+  });
+
+  it('applies revisions: update, add after, remove, move, sections, variables', () => {
+    const spec = {
+      title: 'Svc',
+      panels: [
+        { title: 'RPS', type: 'timeseries', row: 'Traffic', queries: [{ expr: 'a' }] },
+        { title: 'Errors', type: 'timeseries', row: 'Traffic', queries: [{ expr: 'b' }] },
+        { title: 'Logs', type: 'logs', queries: [{ expr: '{x="y"}' }] },
+      ],
+      variables: [{ name: 'svc', type: 'custom', query: 'a,b' }],
+    };
+    const { spec: out, changes, problems } = applyRevision(spec, {
+      update_panels: [{ title: 'rps', set: { type: 'stat', unit: 'reqps' } }],
+      add_panels: [{ title: 'Latency', type: 'heatmap', after: 'RPS', row: 'Traffic' }],
+      remove_panels: ['Logs', 'Nope'],
+      move_panels: [{ title: 'Errors', row: 'Failures' }],
+      collapse_rows: ['Failures'],
+      add_variables: [{ name: 'ns', type: 'query', query: 'label_values(up, namespace)' }],
+      title: 'Service overview',
+    });
+    expect(out.title).toBe('Service overview');
+    expect(out.panels.map((p: any) => `${p.title}:${p.type}:${p.row ?? ''}`)).toEqual(['RPS:stat:Traffic', 'Latency:heatmap:Traffic', 'Errors:timeseries:Failures']);
+    expect(out.panels[0].unit).toBe('reqps');
+    expect(out.collapsed_rows).toEqual(['Failures']);
+    expect(out.variables.map((v: any) => v.name)).toEqual(['svc', 'ns']);
+    expect(problems).toEqual(['no panel titled "Nope" to remove']);
+    expect(changes).toContain('+ added "Latency" (heatmap)');
+    expect(spec.panels).toHaveLength(3); // input untouched
+  });
+
+  it('revise_draft edits the latest draft and numbers revisions', async () => {
+    const drafts: any[] = [];
+    const ctx = ctxWith(fakeHttp(() => seriesResponse([{ labels: { job: 'api' }, values: [1, 2] }])), { latestDraft: () => drafts[drafts.length - 1] });
+    const draftTool = draftDashboardTool((d: any) => drafts.push(d));
+    const revise = reviseDraftTool((d: any) => drafts.push(d));
+    await draftTool.run({ title: 'Svc', panels: [{ title: 'RPS', type: 'timeseries', datasource_uid: 'mimir', queries: [{ expr: 'sum(rate(http_requests_total[5m]))' }] }] }, ctx);
+    expect(drafts[0].revision).toBe(1);
+    expect(drafts[0].fixes).toContain('panel "RPS": rate window → $__rate_interval');
+    const out = await revise.run({ update_panels: [{ title: 'RPS', set: { legend: { mode: 'table' } } }], add_panels: [{ title: 'Up', type: 'stat', datasource_uid: 'mimir', queries: [{ expr: 'up' }] }] }, ctx);
+    expect(drafts).toHaveLength(2);
+    expect(drafts[1].revision).toBe(2);
+    expect(drafts[1].json.panels.map((p: any) => p.title)).toEqual(['RPS', 'Up']);
+    expect(out).toContain('(revision 2)');
+    expect(out).toContain('~ updated "RPS" (legend)');
+    await expect(reviseDraftTool(() => undefined).run({ remove_panels: ['x'] }, ctxWith(fakeHttp(() => ({})), { latestDraft: () => undefined }))).rejects.toThrow(/no dashboard draft/);
+  });
+
+  it('warns about panels returning too many series', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ labels: { pod: `p${i}` }, values: [1] }));
+    const draft = await buildDashboardDraft(
+      { title: 'X', panels: [{ title: 'Pods', type: 'timeseries', datasource_uid: 'mimir', queries: [{ expr: 'sum by (pod) (rate(cpu_seconds_total[5m]))' }] }] },
+      ctxWith(fakeHttp(() => seriesResponse(many)))
+    );
+    expect(draft.warnings.join(' ')).toMatch(/40 series is hard to read/);
+  });
+});
+
+describe('saving revisions', () => {
+  const { applyProposal } = jest.requireActual('./apply');
+  const draft = { title: 'Svc', revision: 3, folderUid: 'f1', json: { uid: 'new-uid', title: 'Svc', panels: [] } };
+
+  it('overwrites the already-saved dashboard when replaceUid is given', async () => {
+    const http = fakeHttp(() => ({ url: '/d/saved-uid/svc' }));
+    const r = await applyProposal(http, { kind: 'dashboard', draft } as any, { replaceUid: 'saved-uid' });
+    expect(http.calls[0]).toMatchObject({
+      method: 'POST',
+      url: '/api/dashboards/db',
+      body: { dashboard: { uid: 'saved-uid', id: null }, folderUid: 'f1', overwrite: true, message: 'Augur: revision 3' },
+    });
+    expect(r).toEqual({ message: 'Updated dashboard "Svc" (revision 3)', url: '/d/saved-uid/svc' });
+  });
+
+  it('creates a new dashboard otherwise', async () => {
+    const http = fakeHttp(() => ({ url: '/d/new-uid/svc' }));
+    const r = await applyProposal(http, { kind: 'dashboard', draft } as any);
+    expect(http.calls[0].body).not.toMatchObject({ overwrite: true });
+    expect(r.message).toBe('Saved dashboard "Svc"');
   });
 });

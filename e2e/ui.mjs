@@ -52,6 +52,19 @@ async function runOnce(n) {
       check(!/STUB REQUEST PROBLEMS/.test(text), `${tag}model requests from the browser were well-formed`);
       check(!/HTTP (4|5)\d\d/.test(text), `${tag}no tool or gateway errors shown`);
       check(!!(await page.$('[data-testid="claude-draft-card"]')), `${tag}dashboard draft card shown (not applied without a click)`);
+      // The draft previews with real Grafana panels: every panel finishes loading and none errors.
+      const preview = await page
+        .waitForFunction(
+          () => {
+            const el = document.querySelector('[data-testid="augur-draft-preview"]');
+            const cells = el?.querySelectorAll('[aria-label^="Preview of"]') ?? [];
+            return cells.length > 0 && !el.querySelector('[data-testid="Spinner"]') ? { cells: cells.length, alerts: el.querySelectorAll('[role="alert"]').length, canvases: el.querySelectorAll('canvas').length } : false;
+          },
+          { timeout: 30_000 }
+        )
+        .then((h) => h.jsonValue(), () => undefined);
+      check(!!preview && preview.cells === 2, `${tag}draft preview renders both panels${preview ? ` (${JSON.stringify(preview)})` : ''}`);
+      check(!!preview && preview.alerts === 0, `${tag}draft preview panels render without errors`);
     }
     // Let late renders (folder list, scrolling) settle so errors after the run are caught too.
     await new Promise((r) => setTimeout(r, 3000));

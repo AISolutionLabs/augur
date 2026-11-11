@@ -142,6 +142,8 @@ export interface ToolContext {
   currentTool?: { name: string; id: string };
   /** The newest unsaved dashboard draft in this conversation (for incremental edits). */
   latestDraft?: () => import('./dashboard').DashboardDraft | undefined;
+  /** Panel plugin ids installed in this Grafana (dashboards only use these). */
+  panelTypes?: Set<string>;
 }
 
 export interface Finding {

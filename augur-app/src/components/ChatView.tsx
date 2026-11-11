@@ -22,7 +22,7 @@ import {
 import { AgentMode } from '../agent/types';
 import { AugurSession, RANGE_MS } from '../session/useAugurSession';
 import { Item } from '../session/history';
-import { buildReport, download } from '../report';
+import { buildReport, download, printHtml, ReportInput, reportHtml } from '../report';
 import { loadPersonalRules, newId, savePersonalRules } from '../settings';
 import { Markdown } from './Markdown';
 import { ToolStep } from './ToolStep';
@@ -140,25 +140,30 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
     }
   };
 
-  const exportReport = () => {
+  const reportInput = (): ReportInput => {
     const finalAnswer = [...session.items].reverse().find((x) => x.kind === 'assistant') as { text: string } | undefined;
     const first = session.items.find((x) => x.kind === 'user') as { text: string } | undefined;
     const now = Date.now();
-    download(
-      `augur-${new Date(now).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`,
-      buildReport({
-        title: `Investigation: ${first?.text ?? session.title}`.slice(0, 120),
-        question: first?.text ?? '',
-        range: { from: session.createdAt - (RANGE_MS[session.rangeKey] ?? 36e5), to: now },
-        finalAnswer: finalAnswer?.text ?? '',
-        findings: session.findings,
-        queries: session.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ label: x.label, ok: x.status === 'ok' })),
-        ledger: session.evidence,
-        user: config.bootData?.user?.login,
-        generatedAt: now,
-      })
-    );
+    return {
+      title: `Investigation: ${first?.text ?? session.title}`.slice(0, 120),
+      question: first?.text ?? '',
+      range: { from: session.createdAt - (RANGE_MS[session.rangeKey] ?? 36e5), to: now },
+      finalAnswer: finalAnswer?.text ?? '',
+      findings: session.findings,
+      hypotheses: session.hypotheses,
+      queries: session.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ label: x.label, ok: x.status === 'ok' })),
+      ledger: session.evidence,
+      user: config.bootData?.user?.login,
+      generatedAt: now,
+    };
   };
+
+  const exportMarkdown = () => {
+    const r = reportInput();
+    download(`augur-${new Date(r.generatedAt).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`, buildReport(r));
+  };
+
+  const exportPdf = () => printHtml(reportHtml(reportInput()));
 
   const save = async () => {
     setSaving(true);
@@ -334,8 +339,11 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                       {saving ? 'Saving…' : 'Save to Grafana'}
                     </Button>
                   )}
-                  <Button size="sm" variant="secondary" icon="download-alt" onClick={exportReport}>
-                    Export report
+                  <Button size="sm" variant="secondary" icon="download-alt" onClick={exportMarkdown} tooltip="Download the report as Markdown">
+                    Markdown
+                  </Button>
+                  <Button size="sm" variant="secondary" icon="file-alt" onClick={exportPdf} tooltip="Print the report; choose Save as PDF">
+                    PDF
                   </Button>
                 </>
               )}

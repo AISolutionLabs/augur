@@ -17,10 +17,12 @@ import { runAgent } from '../agent/runner';
 import { buildToolset } from '../agent/tools';
 import { buildSystemPrompt, conclusionGate, stateReminder } from '../agent/prompts';
 import { applyProposal } from '../agent/apply';
+import { loadCapabilities } from '../agent/capabilities';
 import { STEP_BUDGET } from '../constants';
 import { DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens } from '../settings';
 import type { AgentEvent, AgentMode, DataSourceInfo, EvidenceRecord, Finding, GrafanaHttp, Hypothesis, Message, MessagesRequest, MessagesResponse, ModelCaller, ToolDefinition, Usage } from '../agent/types';
 import type { Proposal } from '../agent/proposals';
+import type { DashboardDraft } from '../agent/dashboard';
 
 export interface HeadlessConfig {
   grafanaUrl: string;
@@ -219,6 +221,7 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
     http.get<{ version?: string }>('/api/health').catch(() => ({ version: undefined })),
   ]);
   const datasources: DataSourceInfo[] = dsList.map((d) => ({ uid: d.uid, name: d.name, type: d.type, isDefault: d.isDefault }));
+  const capabilities = await loadCapabilities(http, health.version);
 
   // Lead-agent model calls are recorded for the trajectory; sub-agent calls only count usage.
   const usage: Required<Usage> = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -252,12 +255,26 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
   // Auto-apply: each proposal is applied right away, and the outcome is appended to the output of
   // the tool call that produced it so the model sees failures (as a user would).
   let pending: Array<Promise<string>> = [];
+  const drafts: DashboardDraft[] = [];
+  const savedUids = new Map<string, string>(); // draft lineage → saved dashboard uid
   const propose =
     cfg.apply === 'auto'
       ? (p: Proposal) => {
+          // A revision updates the dashboard saved from an earlier version of the same draft instead of adding another.
+          const lineage = p.kind === 'dashboard' ? p.draft.lineage ?? p.draft.id : undefined;
+          const replaceUid = lineage ? savedUids.get(lineage) : undefined;
+          if (p.kind === 'dashboard') {
+            drafts.push(p.draft);
+          }
           pending.push(
-            applyProposal(http, p, { folderUid: cfg.folderUid, login: user.login ?? 'augur-headless' }).then(
-              (r) => (applied.push({ kind: p.kind, message: r.message, url: r.url }), `[applied automatically: ${r.message} → ${r.url}]`),
+            applyProposal(http, p, { folderUid: cfg.folderUid, login: user.login ?? 'augur-headless', replaceUid }).then(
+              (r) => {
+                if (lineage) {
+                  savedUids.set(lineage, replaceUid ?? r.url.match(/\/d\/([^/]+)/)?.[1] ?? (p as { draft: DashboardDraft }).draft.json.uid);
+                }
+                applied.push({ kind: p.kind, message: r.message, url: r.url });
+                return `[applied automatically: ${r.message} → ${r.url}]`;
+              },
               (e) => {
                 const d = (e as HttpError).data as any;
                 const msg = d?.message ?? (e as Error).message;
@@ -284,7 +301,7 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
 
   const now = cfg.now;
   const range = { from: now - cfg.rangeMs, to: now };
-  const promptBase = { now, range, datasources, user: { login: user.login }, grafanaVersion: health.version, timezone: 'UTC' };
+  const promptBase = { now, range, datasources, user: { login: user.login }, grafanaVersion: health.version, timezone: 'UTC', capabilities };
   const onEvent = (e: AgentEvent) => {
     if (e.kind === 'tool_start') {
       log(`${e.agent ? `  [${e.agent}] ` : ''}→ ${e.name} ${JSON.stringify(e.input).slice(0, 160)}`);
@@ -306,6 +323,7 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
       propose,
       skills: [],
       mcp: [],
+      capabilities: async () => capabilities,
       delegate: subAgents ? { call: subCall, model: cfg.model, maxTokens: cfg.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent } : undefined,
     })
   );
@@ -346,6 +364,8 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
         return id;
       },
       recordFinding: (f) => findings.push(f),
+      panelTypes: capabilities.panels,
+      latestDraft: () => drafts[drafts.length - 1],
       updateHypothesis: (h) => {
         hypotheses = [...hypotheses.filter((x) => x.id !== h.id), h];
       },

@@ -19,7 +19,7 @@ export function ProposalCard(props: ProposalProps) {
   const p = props.proposal;
   switch (p.kind) {
     case 'dashboard':
-      return <DraftCard draft={p.draft} superseded={props.superseded} onSaved={(title, url) => props.onApplied(`Saved dashboard "${title}"`, url)} />;
+      return <DraftCard draft={p.draft} superseded={props.superseded} onSaved={props.onApplied} />;
     case 'dashboard_edit':
       return <EditCard p={p} onApplied={props.onApplied} />;
     case 'silence':

@@ -16,6 +16,7 @@ import { loadMcpCatalog, McpCatalog, mcpTools } from '../agent/tools/mcp';
 import { Proposal } from '../agent/proposals';
 import { DashboardDraft } from '../agent/dashboard';
 import { saveInvestigation as saveInvestigationApi } from '../agent/investigations';
+import { Capabilities, loadCapabilities } from '../agent/capabilities';
 import { ClaudeDsConfig, datasourceModelCaller, getClaudeConfig, grafanaHttp, listClaudeDataSources, listDataSources } from '../api';
 import { STEP_BUDGET } from '../constants';
 import { AugurSettings, DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens, loadPersonalRules, loadSettings, Skill } from '../settings';
@@ -182,6 +183,9 @@ class AugurStore {
   private pendingNotes = new Map<string, string[]>();
   private persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private initStarted = false;
+  /** Installed plugins, loaded once per page. */
+  private capabilities?: Promise<Capabilities>;
+  private getCapabilities = () => (this.capabilities ??= loadCapabilities(grafanaHttp, config.buildInfo?.version));
   private unloadHooked = false;
   private readonly tabId = `t-${Math.random().toString(36).slice(2, 10)}`;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -647,6 +651,8 @@ class AugurStore {
     this.publishRuns();
     const onEvent = this.eventsFor(run);
 
+    // Installed apps and panels (cached; never holds up a run for long).
+    const capabilities = await Promise.race([this.getCapabilities(), new Promise<undefined>((r) => setTimeout(() => r(undefined), 3000))]);
     const now = Date.now();
     const range = { from: now - (RANGE_MS[run.session.rangeKey] ?? 36e5), to: now };
     const datasources = listDataSources();
@@ -667,6 +673,7 @@ class AugurStore {
       pageContext,
       mcpServers: mcp.servers.filter((s) => s.tools?.length).map((s) => s.name),
       timezone: resolveTimezone(user?.timezone),
+      capabilities,
     };
     const system = buildSystemPrompt({ ...promptBase, mode, subAgents });
     const propose = (p: Proposal) =>
@@ -676,6 +683,7 @@ class AugurStore {
       skills,
       memory: settings.memory,
       mcp: mcpTools(mcp, dsUid),
+      capabilities: this.getCapabilities,
       delegate: subAgents ? { call, model, maxTokens: dsConfig?.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent } : undefined,
     });
 
@@ -708,6 +716,7 @@ class AugurStore {
           signal: ac.signal,
           propose,
           latestDraft: () => latestDashboardDraft(run.session),
+          panelTypes: capabilities?.panels,
           recordEvidence: (e: Omit<EvidenceRecord, 'id'>) => {
             const evId = `E${(run.session.evidence?.length ?? 0) + 1}`;
             this.updateSessionById(id, (s) => ({ ...s, evidence: [...(s.evidence ?? []), { ...e, id: evId }] }));

@@ -1,3 +1,4 @@
+import { Capabilities, capabilitiesSummary } from './capabilities';
 import { AgentMode, DataSourceInfo, TimeRangeMs, Hypothesis } from './types';
 import { iso } from './time';
 import { Rule, Skill } from '../settings';
@@ -18,6 +19,8 @@ export interface PromptContext {
   subAgents?: boolean;
   /** IANA timezone of the user (Grafana preference or browser), e.g. Europe/London. */
   timezone?: string;
+  /** Installed apps, panel and datasource plugins. */
+  capabilities?: Capabilities;
 }
 
 const LGTM_ORDER = ['prometheus', 'loki', 'tempo', 'grafana-pyroscope-datasource', 'alertmanager'];
@@ -126,6 +129,7 @@ Environment:
 - User: ${p.user?.login ?? 'unknown'}${p.user?.orgRole ? ` (${p.user.orgRole})` : ''}${p.grafanaVersion ? `\n- Grafana ${p.grafanaVersion}` : ''}
 - Datasources visible to this user:
 ${inventory(p.datasources)}`,
+    capabilitiesSummary(p.capabilities),
     p.memorySummary ? `\nInfrastructure memory (from the last scan; details via get_infrastructure_memory):\n${p.memorySummary}` : '',
     p.pageContext ? `\nThe user currently has this Grafana page open (use it to resolve "this", "here", "this panel"):\n${p.pageContext}` : '',
   ]

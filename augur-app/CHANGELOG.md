@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.0
+
+- **Multiple conversations.** A conversations rail (page) and list (sidebar) with search, rename, pin and delete, grouped by Running, Pinned, Today, Yesterday, Previous 7 days and Older. Switching conversations no longer stops a run: up to three conversations run in parallel in the background, each with its own cross-tab lease; runs waiting for approval or interrupted are marked. Stop affects only the open conversation. History keeps 60 conversations and compacts older transcripts (then long tool outputs) before evicting any.
+- **Knows the installed Grafana.** Each run reads the enabled plugins and Grafana version and tells the model which apps (Drilldown, SLO, IRM, k6, Asserts…), datasource types and panel types exist; links point only to installed apps. New `grafana_capabilities` tool for the full list.
+- **Dashboard builder overhaul.**
+  - Live preview: draft cards render real Grafana panels with the last hour of data (`PanelRenderer`, variables wildcarded, up to 20 panels).
+  - Modern panels: legends (table/list, placement, calcs), color schemes, per-series overrides, value/range mappings, data links, repeat-by-variable, threshold lines/areas, stacking, gradient fills; new types state-timeline, status-history, histogram and flame graph (Pyroscope); heatmap-format bucket queries; collapsed rows.
+  - Layout: stat runs share a full row, lines fill to 24 columns, heights equalised per line.
+  - Lint with automatic fixes: `$__rate_interval` for short rate windows and units inferred from metric names; warnings for raw counters, buckets without `histogram_quantile`, missing `le`, log/metric query mismatches, more than 30 series, and panel types that aren't installed (fallback to time series).
+  - `revise_draft`: change only the panels you mention; numbered revisions. **Update saved dashboard** overwrites the dashboard saved from an earlier revision (the headless runner does the same with `AUGUR_APPLY=auto`).
+- **PDF export for investigation reports.** A print-ready report (write-up, findings by severity, hypotheses, evidence ledger, queries) printed from a hidden frame; choose *Save as PDF*. No external service or dependency. The Markdown report now includes hypotheses too.
+- E2E: the browser pass checks that the dashboard preview renders both panels without errors.
+
 ## 1.5.2
 
 - Fix: React error #185 ("maximum update depth exceeded") after typing ~50 characters into the chat box on Grafana 13. Each keystroke re-rendered the whole chat view, including Grafana UI tooltips that also re-render on every keydown, which kept a synchronous update pending after each commit until React aborted. The chat box now keeps its own text, so typing re-renders only the box.

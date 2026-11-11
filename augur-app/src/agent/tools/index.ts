@@ -1,9 +1,10 @@
+import { Capabilities, capabilitiesTool } from '../capabilities';
 import { AgentMode, ToolDefinition } from '../types';
 import { Proposal } from '../proposals';
 import { Skill, InfraMemory } from '../../settings';
 import { observabilityTools } from './observability';
 import { grafanaObjectTools, recordFinding } from './grafanaObjects';
-import { draftDashboardTool, listFolders } from './dashboards';
+import { draftDashboardTool, listFolders, reviseDraftTool } from './dashboards';
 import { actionTools, listSilences, queryProfiles } from './actions';
 import { memoryTool, readPastInvestigation, searchPastInvestigations, skillTools } from './knowledge';
 import { delegateTool, DelegateDeps, hypothesisTool } from './investigation';
@@ -16,6 +17,8 @@ export interface ToolsetDeps {
   mcp: ToolDefinition[];
   /** Enables the delegate tool in investigations. */
   delegate?: Omit<DelegateDeps, 'subTools'>;
+  /** What this Grafana has installed (enables grafana_capabilities). */
+  capabilities?: () => Promise<Capabilities>;
 }
 
 /**
@@ -34,6 +37,7 @@ export function readOnlyTools(deps: Partial<ToolsetDeps>): ToolDefinition[] {
     ...memoryTool(deps.memory),
     searchPastInvestigations,
     readPastInvestigation,
+    ...(deps.capabilities ? [capabilitiesTool(deps.capabilities)] : []),
     ...(deps.mcp ?? []).filter((t) => t.readOnly === true),
   ];
 }
@@ -43,7 +47,13 @@ export function buildToolset(mode: AgentMode, deps: Partial<ToolsetDeps> = {}): 
   const tools: ToolDefinition[] = [
     ...readOnlyTools(deps),
     // Proposal tools only exist when a UI can show the proposal to a user.
-    ...(propose ? [draftDashboardTool((d) => propose({ kind: 'dashboard', id: d.id, draft: d })), ...actionTools.filter((t) => t !== listSilences)] : []),
+    ...(propose
+      ? [
+          draftDashboardTool((d) => propose({ kind: 'dashboard', id: d.id, draft: d })),
+          reviseDraftTool((d) => propose({ kind: 'dashboard', id: d.id, draft: d })),
+          ...actionTools.filter((t) => t !== listSilences),
+        ]
+      : []),
     ...(deps.mcp ?? []),
   ];
   if (mode === 'investigate') {

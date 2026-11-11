@@ -10,6 +10,8 @@ export interface ApplyOptions {
   folderUid?: string;
   /** Recorded as the silence's creator. */
   login?: string;
+  /** Save a dashboard draft over this existing dashboard (unattended revisions of a saved draft). */
+  replaceUid?: string;
 }
 
 export interface ApplyResult {
@@ -20,6 +22,15 @@ export interface ApplyResult {
 export async function applyProposal(http: GrafanaHttp, p: Proposal, opts: ApplyOptions = {}): Promise<ApplyResult> {
   switch (p.kind) {
     case 'dashboard': {
+      if (opts.replaceUid) {
+        const r = await http.post<{ url: string }>('/api/dashboards/db', {
+          dashboard: { ...p.draft.json, id: null, uid: opts.replaceUid },
+          folderUid: opts.folderUid ?? p.draft.folderUid ?? '',
+          overwrite: true,
+          message: `Augur: revision ${p.draft.revision ?? ''}`.trim(),
+        });
+        return { message: `Updated dashboard "${p.draft.title}" (revision ${p.draft.revision ?? 2})`, url: r.url };
+      }
       const r = await saveDashboard(http, p.draft, opts.folderUid);
       return { message: `Saved dashboard "${p.draft.title}"`, url: r.url };
     }

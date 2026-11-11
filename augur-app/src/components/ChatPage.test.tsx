@@ -247,6 +247,14 @@ test('investigation: findings and hypotheses board, conclusion gate, save to Gra
   expect(saved.data.dashboard.panels[0].options.content).toContain('v2.4.0');
   expect(saved.data.dashboard.panels.some((p: any) => p.targets?.[0]?.expr === 'sum by (service) (rate(errors[5m]))')).toBe(true);
   expect(posted.some((p) => p.url === '/api/annotations' && p.data.dashboardUID === 'new')).toBe(true);
+  // PDF export prints a standalone report (with hypotheses and the evidence ledger) from a hidden frame.
+  fireEvent.click(screen.getByRole('button', { name: /PDF/ }));
+  const frame = document.querySelector('iframe[title="Report print preview"]') as HTMLIFrameElement;
+  expect(frame.srcdoc).toContain('v2.4.0 deploy caused errors');
+  expect(frame.srcdoc).toContain('hyp-confirmed');
+  expect(frame.srcdoc).toContain('Evidence ledger');
+  expect(screen.getByRole('button', { name: /Markdown/ })).toBeInTheDocument();
+  frame.remove();
 });
 
 test('dashboard draft saves only on click; edit proposal applies with version guard', async () => {
