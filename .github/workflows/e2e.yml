@@ -119,6 +119,8 @@ jobs:
           export O11Y_SCENARIO_TIME_ISO=$(date -u +%Y-%m-%dT%H:%M:00Z)
           docker compose -f docker-compose.control.yaml up -d --build --wait
           CONTROL_LABEL="Without Augur (Grafana pages)" node control.mjs 2>&1 | tee -a control.log
+          CONTROL_LABEL="Without Augur, typing in Grafana's dashboard search" CONTROL_PAGES=/dashboards CONTROL_DWELL_MS=3000 \
+            CONTROL_TYPE_SELECTOR='input[placeholder*="Search"]' node control.mjs 2>&1 | tee -a control.log
           docker compose -f docker-compose.control.yaml down -v
       - name: Augur installed, idle
         working-directory: e2e

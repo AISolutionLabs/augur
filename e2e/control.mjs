@@ -42,6 +42,16 @@ try {
     });
     for (const p of pages) {
       await page.goto(`${grafana}${p}`, { waitUntil: 'networkidle2', timeout: 60_000 }).catch(() => undefined);
+      // Optionally type into one of Grafana's own inputs, the way the Augur arm types its prompt.
+      if (process.env.CONTROL_TYPE_SELECTOR) {
+        const input = await page.waitForSelector(process.env.CONTROL_TYPE_SELECTOR, { timeout: 15_000 }).catch(() => null);
+        if (input) {
+          await input.click().catch(() => undefined);
+          await input.type(process.env.CONTROL_TYPE_TEXT ?? 'Give me an overview of service health and build a dashboard for it.', { delay: 8 }).catch(() => undefined);
+        } else {
+          console.log(`[${label}] pass ${n}: no input matching ${process.env.CONTROL_TYPE_SELECTOR} on ${p}`);
+        }
+      }
       await new Promise((r) => setTimeout(r, dwellMs));
     }
     await context.close();

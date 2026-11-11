@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { css, cx } from '@emotion/css';
 import { GrafanaTheme2, SelectableValue } from '@grafana/data';
 import { config } from '@grafana/runtime';
@@ -71,7 +71,12 @@ export interface ChatViewProps {
 
 export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const st = useStyles2(getStyles);
-  const [input, setInput] = useState('');
+  // The composer's text lives in <Composer>, so typing re-renders only the text box (see Composer).
+  const composer = useRef<ComposerHandle>(null);
+  const [composerEmpty, setComposerEmpty] = useState(true);
+  const sRef = useRef(s);
+  sRef.current = s;
+  const sendText = useCallback((text: string) => sRef.current.send(text), []);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | undefined>();
   const [showPanel, setShowPanel] = useState(false);
@@ -109,7 +114,6 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   }, [autoStart, s, session.items.length]);
 
   const skills = useMemo(() => (s.settings.skills ?? []).filter((x) => x.enabled), [s.settings.skills]);
-  const slash = input.startsWith('/') && !input.includes(' ') ? skills.filter((k) => k.name.startsWith(input.slice(1).toLowerCase())).slice(0, 6) : [];
 
   const latestDraft = useMemo(
     () => [...session.items].reverse().find((x) => x.kind === 'proposal' && session.proposals[x.id]?.kind === 'dashboard') as { id: string } | undefined,
@@ -119,12 +123,14 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const hasAnswer = session.items.some((x) => x.kind === 'assistant');
   const isInvestigation = mode === 'investigate' || session.findings.length > 0 || session.hypotheses.length > 0;
 
-  const submit = (text = input) => {
-    if (!text.trim()) {
+  const submit = (text?: string) => {
+    if (text === undefined) {
+      composer.current?.submit();
       return;
     }
-    setInput('');
-    s.send(text);
+    if (text.trim()) {
+      s.send(text);
+    }
   };
 
   const exportReport = () => {
@@ -283,31 +289,14 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
         </div>
 
         <div className={st.composer}>
-          {slash.length > 0 && (
-            <div className={st.slash} role="listbox" aria-label="Skills">
-              {slash.map((k) => (
-                <button key={k.name} type="button" className={st.slashItem} onClick={() => setInput(`/${k.name} `)}>
-                  <b>/{k.name}</b> <span className={st.muted}>{k.description}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          <TextArea
+          <Composer
+            ref={composer}
             rows={variant === 'sidebar' ? 2 : 3}
-            value={input}
             placeholder={mode === 'investigate' ? 'e.g. p99 latency on payments doubled since 14:00 UTC. Why?' : 'Ask, build a dashboard, draft an alert… / for skills (Enter to send)'}
-            onChange={(e) => setInput(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-              if (e.key === 'Tab' && slash.length) {
-                e.preventDefault();
-                setInput(`/${slash[0].name} `);
-              }
-            }}
             disabled={!s.dsConfig}
+            skills={skills}
+            onSend={sendText}
+            onEmptyChange={setComposerEmpty}
           />
           <Stack justifyContent="space-between" alignItems="center" wrap="wrap">
             <span className={st.muted}>
@@ -341,7 +330,7 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                   Stop
                 </Button>
               ) : (
-                <Button icon={mode === 'investigate' ? 'search' : 'message'} onClick={() => submit()} disabled={!input.trim() || !s.dsConfig || s.runningElsewhere}>
+                <Button icon={mode === 'investigate' ? 'search' : 'message'} onClick={() => submit()} disabled={composerEmpty || !s.dsConfig || s.runningElsewhere}>
                   {mode === 'investigate' ? 'Investigate' : 'Send'}
                 </Button>
               )}
@@ -502,3 +491,68 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
   }
   return (document.scrollingElement as HTMLElement | null) ?? null;
 }
+
+interface ComposerHandle {
+  submit: () => void;
+}
+
+interface ComposerProps {
+  rows: number;
+  placeholder: string;
+  disabled: boolean;
+  skills: Array<{ name: string; description?: string }>;
+  onSend: (text: string) => void;
+  onEmptyChange: (empty: boolean) => void;
+}
+
+/**
+ * The chat input. Its text is local state, so a keystroke re-renders only this box. When typing
+ * re-rendered the whole chat view (toolbar tooltips, pickers), every keystroke also re-rendered
+ * Grafana 13's chrome, and after ~50 characters React aborted with error #185.
+ */
+const Composer = React.memo(
+  React.forwardRef<ComposerHandle, ComposerProps>(function Composer({ rows, placeholder, disabled, skills, onSend, onEmptyChange }, ref) {
+    const st = useStyles2(getStyles);
+    const [text, setText] = useState('');
+    const empty = !text.trim();
+    useEffect(() => onEmptyChange(empty), [empty, onEmptyChange]);
+    const slash = text.startsWith('/') && !text.includes(' ') ? skills.filter((k) => k.name.startsWith(text.slice(1).toLowerCase())).slice(0, 6) : [];
+    const submit = useCallback(() => {
+      if (text.trim()) {
+        setText('');
+        onSend(text);
+      }
+    }, [text, onSend]);
+    useImperativeHandle(ref, () => ({ submit }), [submit]);
+    return (
+      <>
+        {slash.length > 0 && (
+          <div className={st.slash} role="listbox" aria-label="Skills">
+            {slash.map((k) => (
+              <button key={k.name} type="button" className={st.slashItem} onClick={() => setText(`/${k.name} `)}>
+                <b>/{k.name}</b> <span className={st.muted}>{k.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <TextArea
+          rows={rows}
+          value={text}
+          placeholder={placeholder}
+          onChange={(e) => setText(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+            if (e.key === 'Tab' && slash.length) {
+              e.preventDefault();
+              setText(`/${slash[0].name} `);
+            }
+          }}
+          disabled={disabled}
+        />
+      </>
+    );
+  })
+);

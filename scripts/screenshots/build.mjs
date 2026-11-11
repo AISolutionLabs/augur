@@ -23,13 +23,13 @@ await build({
   format: 'esm',
   platform: 'browser',
   jsx: 'automatic',
-  define: { 'process.env.NODE_ENV': '"production"', global: 'window' },
+  define: { 'process.env.NODE_ENV': JSON.stringify(process.env.HARNESS_ENV ?? 'production'), global: 'window' },
   loader: { '.svg': 'dataurl', '.woff': 'dataurl', '.woff2': 'dataurl', '.png': 'dataurl', '.ttf': 'dataurl', '.css': 'empty' },
   alias: { '@grafana/runtime': path.join(here, 'runtime-mock.tsx') },
   nodePaths: [path.join(app, 'node_modules')],
   resolveExtensions: ['.tsx', '.ts', '.mjs', '.js', '.json'],
   logLevel: 'warning',
-  minify: true,
+  minify: process.env.HARNESS_ENV !== 'development',
 });
 
 for (const [scene, slow] of [['investigation', false], ['actions', false], ['investigation-slow', true]]) {
