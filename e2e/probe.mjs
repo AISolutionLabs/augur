@@ -2,6 +2,8 @@
 // summary of recent commits so an update loop (React error #185) can be attributed to components
 // and to where they are on the page, which the error's own stack cannot show.
 export const LOOP_PROBE = () => {
+  // Deep stacks: the frames past React's internals show who scheduled the looping update.
+  Error.stackTraceLimit = 80;
   const recent = [];
   const scrolls = [];
   addEventListener('scroll', () => { scrolls.push(performance.now()); if (scrolls.length > 400) scrolls.shift(); }, { capture: true, passive: true });

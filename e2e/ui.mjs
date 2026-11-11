@@ -29,7 +29,7 @@ async function runOnce(n) {
     await page.evaluateOnNewDocument(LOOP_PROBE);
     const errors = [];
     page.on('pageerror', (e) => {
-      const stack = String(e.stack ?? e).split('\n').slice(0, 8).join('\n    ');
+      const stack = String(e.stack ?? e).split('\n').slice(0, 60).join('\n    ');
       const loop = /#185|Maximum update depth/.test(String(e)) ? page.evaluate(() => window.__augurLoopReport?.()).catch(() => 'no probe') : Promise.resolve('');
       loop.then((report) => {
         const line = `${String(e).split('\n')[0]}${report ? ` [loop: ${report}]` : ''}`;
