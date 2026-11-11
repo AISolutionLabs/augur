@@ -127,8 +127,8 @@ function renderPage(path = '/a/augur-assistant-app') {
 }
 
 async function ask(text: string, button = /^Send$/) {
-  await waitFor(() => expect(screen.getByRole('textbox')).not.toBeDisabled());
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: text } });
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message Augur' })).not.toBeDisabled());
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message Augur' }), { target: { value: text } });
   fireEvent.click(screen.getByRole('button', { name: button }));
 }
 
@@ -423,7 +423,7 @@ describe('run lease across tabs', () => {
     const now = Date.now();
     localStorage.setItem('augur-assistant-app/history', JSON.stringify([runningSession(now)]));
     localStorage.setItem('augur-assistant-app/current', 's-tab');
-    localStorage.setItem('augur-assistant-app/lease', JSON.stringify({ sessionId: 's-tab', tabId: 'other-tab', heartbeat: now }));
+    localStorage.setItem('augur-assistant-app/lease/s-tab', JSON.stringify({ sessionId: 's-tab', tabId: 'other-tab', heartbeat: now }));
     resetStoreForTests();
     renderPage();
     await screen.findByTestId('augur-elsewhere');
@@ -432,7 +432,7 @@ describe('run lease across tabs', () => {
     // The other tab finishes: it clears the run, saves its answer and releases the lease.
     const done = { ...runningSession(now), run: undefined, items: [...runningSession(now).items, { kind: 'assistant', text: 'Answer from the other tab.' }] };
     localStorage.setItem('augur-assistant-app/history', JSON.stringify([done]));
-    localStorage.removeItem('augur-assistant-app/lease');
+    localStorage.removeItem('augur-assistant-app/lease/s-tab');
     expect(await screen.findByText('Answer from the other tab.', {}, { timeout: 6000 })).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId('augur-elsewhere')).not.toBeInTheDocument());
   }, 15000);
@@ -441,7 +441,7 @@ describe('run lease across tabs', () => {
     const now = Date.now();
     localStorage.setItem('augur-assistant-app/history', JSON.stringify([runningSession(now)]));
     localStorage.setItem('augur-assistant-app/current', 's-tab');
-    localStorage.setItem('augur-assistant-app/lease', JSON.stringify({ sessionId: 's-tab', tabId: 'dead-tab', heartbeat: now - 60_000 }));
+    localStorage.setItem('augur-assistant-app/lease/s-tab', JSON.stringify({ sessionId: 's-tab', tabId: 'dead-tab', heartbeat: now - 60_000 }));
     resetStoreForTests();
     renderPage();
     await screen.findByTestId('augur-interrupted');
@@ -453,9 +453,97 @@ describe('run lease across tabs', () => {
     modelScript = [new Promise((r) => (release = r))];
     renderPage();
     await ask('question');
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('augur-assistant-app/lease') ?? 'null')).toMatchObject({ sessionId: expect.any(String) }));
+    const leases = () => Object.keys(localStorage).filter((k) => k.startsWith('augur-assistant-app/lease/'));
+    await waitFor(() => expect(leases()).toHaveLength(1));
+    expect(JSON.parse(localStorage.getItem(leases()[0])!)).toMatchObject({ sessionId: leases()[0].split('/').pop() });
     await act(async () => release({ content: [{ type: 'text', text: 'done' }] }));
     await screen.findByText('done');
-    await waitFor(() => expect(localStorage.getItem('augur-assistant-app/lease')).toBeNull());
+    await waitFor(() => expect(leases()).toHaveLength(0));
+  });
+});
+
+describe('multiple conversations', () => {
+  const rail = () => within(screen.getByRole('complementary', { name: 'Conversations' }));
+  const row = (title: string) => rail().getAllByTestId('augur-conversation').find((r) => r.textContent?.includes(title))!;
+
+  test('switching or starting a new conversation keeps runs going; Stop affects only the open one', async () => {
+    let releaseA: (v: any) => void = () => undefined;
+    modelScript = [new Promise((r) => (releaseA = r))];
+    renderPage();
+    await ask('first question');
+    await waitFor(() => expect(modelCalls()).toHaveLength(1));
+
+    // New conversation while A is running: A is not aborted and shows as running in the list.
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    expect(screen.queryByText('first question', { selector: '[class*="user"] *, [class*="user"]' })).not.toBeInTheDocument();
+    await waitFor(() => expect(row('first question')).toBeTruthy());
+    expect(await screen.findByText('1 running')).toBeInTheDocument();
+
+    // B runs alongside A, then is stopped; A keeps going.
+    modelScript = [new Promise(() => undefined)];
+    await ask('second question');
+    await waitFor(() => expect(modelCalls()).toHaveLength(2));
+    fireEvent.click(await screen.findByRole('button', { name: /^Stop$/ }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Stop$/ })).not.toBeInTheDocument());
+
+    // A finishes in the background; opening it shows the answer.
+    await act(async () => releaseA({ content: [{ type: 'text', text: 'Answer for A, finished in the background.' }] }));
+    fireEvent.click(within(row('first question')).getByRole('button', { name: /first question/ }));
+    expect(await screen.findByText('Answer for A, finished in the background.')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message Augur' })).not.toBeDisabled();
+  });
+
+  test(`at most ${3} conversations run at once`, async () => {
+    modelScript = [new Promise(() => undefined), new Promise(() => undefined), new Promise(() => undefined)];
+    renderPage();
+    for (const q of ['one', 'two', 'three']) {
+      await ask(q);
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Stop$/ })).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    }
+    await ask('four');
+    expect(await screen.findByText(/3 conversations are already running/)).toBeInTheDocument();
+    expect(modelCalls()).toHaveLength(3);
+  });
+
+  test('conversations can be searched, renamed, pinned and deleted', async () => {
+    const now = Date.now();
+    const conv = (id: string, title: string, ageMs: number, extra: any = {}) => ({
+      id,
+      title,
+      mode: 'chat',
+      rangeKey: '1h',
+      createdAt: now - ageMs,
+      updatedAt: now - ageMs,
+      items: [{ kind: 'user', text: title, mode: 'chat' }, { kind: 'assistant', text: `answer to ${title}` }],
+      messages: [],
+      proposals: {},
+      findings: [],
+      hypotheses: [],
+      ...extra,
+    });
+    localStorage.setItem('augur-assistant-app/history', JSON.stringify([conv('a', 'Checkout latency', 60_000), conv('b', 'Kafka lag', 3 * 864e5, { mode: 'investigate' })]));
+    renderPage();
+    await waitFor(() => expect(rail().getAllByTestId('augur-conversation')).toHaveLength(2));
+    expect(rail().getByText('Today')).toBeInTheDocument();
+
+    fireEvent.change(rail().getByRole('textbox', { name: 'Search conversations' }), { target: { value: 'kafka' } });
+    expect(rail().getAllByTestId('augur-conversation')).toHaveLength(1);
+    fireEvent.change(rail().getByRole('textbox', { name: 'Search conversations' }), { target: { value: '' } });
+
+    fireEvent.click(within(row('Kafka lag')).getByRole('button', { name: 'Rename' }));
+    fireEvent.change(rail().getByRole('textbox', { name: 'Conversation name' }), { target: { value: 'Kafka consumer lag (payments)' } });
+    fireEvent.click(rail().getByRole('button', { name: 'Save name' }));
+    await waitFor(() => expect(row('Kafka consumer lag (payments)')).toBeTruthy());
+
+    fireEvent.click(within(row('Kafka consumer lag')).getByRole('button', { name: 'Pin' }));
+    await waitFor(() => expect(rail().getByText('Pinned')).toBeInTheDocument());
+    const stored = JSON.parse(localStorage.getItem('augur-assistant-app/history')!);
+    expect(stored[0]).toMatchObject({ id: 'b', title: 'Kafka consumer lag (payments)', pinned: true });
+
+    fireEvent.click(within(row('Checkout latency')).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(row('Checkout latency')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(rail().getAllByTestId('augur-conversation')).toHaveLength(1));
+    expect(JSON.parse(localStorage.getItem('augur-assistant-app/history')!).map((x: any) => x.id)).toEqual(['b']);
   });
 });

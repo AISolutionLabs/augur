@@ -14,15 +14,28 @@ import { buildSystemPrompt, conclusionGate, resolveTimezone, stateReminder } fro
 import { buildToolset } from '../agent/tools';
 import { loadMcpCatalog, McpCatalog, mcpTools } from '../agent/tools/mcp';
 import { Proposal } from '../agent/proposals';
+import { DashboardDraft } from '../agent/dashboard';
 import { saveInvestigation as saveInvestigationApi } from '../agent/investigations';
 import { ClaudeDsConfig, datasourceModelCaller, getClaudeConfig, grafanaHttp, listClaudeDataSources, listDataSources } from '../api';
 import { STEP_BUDGET } from '../constants';
 import { AugurSettings, DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens, loadPersonalRules, loadSettings, Skill } from '../settings';
-import { Item, loadCurrent, loadHistory, newSession, persist, SessionState, setCurrent, deleteSession } from './history';
+import { Item, loadCurrent, loadHistory, newSession, patchStored, persist, SessionState, setCurrent, deleteSession } from './history';
 
 export const RANGE_MS: Record<string, number> = { '15m': 9e5, '1h': 36e5, '3h': 108e5, '6h': 216e5, '12h': 432e5, '24h': 864e5, '2d': 1728e5, '7d': 6048e5 };
 
 const ZERO_USAGE: Required<Usage> = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+/** Conversations that may run at the same time in one browser tab. */
+export const MAX_PARALLEL_RUNS = 3;
+
+/** What the conversation list shows about a run in progress. */
+export interface RunSummary {
+  title: string;
+  mode: AgentMode;
+  status: string;
+  startedAt: number;
+  pendingApprovals: number;
+}
 
 export interface StoreState {
   ready: boolean;
@@ -37,7 +50,21 @@ export interface StoreState {
   mcp: McpCatalog;
   session: SessionState;
   history: SessionState[];
+  /** The open conversation has a run in progress (in this tab). */
   running: boolean;
+  status: string;
+  usage: Required<Usage>;
+  /** Every run in progress in this tab, by conversation id (they continue while you switch). */
+  runs: Record<string, RunSummary>;
+}
+
+/** Runtime of one conversation's run. Several can be active; each is bound to its conversation. */
+interface RunCtx {
+  sessionId: string;
+  session: SessionState;
+  abort: AbortController;
+  approvals: Map<string, (ok: boolean) => void>;
+  hypotheses: Hypothesis[];
   status: string;
   usage: Required<Usage>;
 }
@@ -88,6 +115,20 @@ export function prepareResume(messages: Message[], interruptedAt: number): Messa
   return out;
 }
 
+/** The newest dashboard draft proposed in a conversation (what revise_draft edits). */
+export function latestDashboardDraft(s: SessionState): DashboardDraft | undefined {
+  for (let i = s.items.length - 1; i >= 0; i--) {
+    const it = s.items[i];
+    if (it.kind === 'proposal') {
+      const p = s.proposals[it.id];
+      if (p?.kind === 'dashboard') {
+        return p.draft;
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Whether a checkpointed transcript has unfinished work (i.e. resuming makes sense). */
 export function canResume(messages: Message[]): boolean {
   const last = messages[messages.length - 1];
@@ -104,7 +145,8 @@ type Listener = () => void;
 
 // ---- run lease (one tab runs a session at a time) -------------------------------
 
-const LEASE_KEY = 'augur-assistant-app/lease';
+const LEASE_PREFIX = 'augur-assistant-app/lease/';
+export const leaseKey = (sessionId: string) => `${LEASE_PREFIX}${sessionId}`;
 export const LEASE_HEARTBEAT_MS = 3_000;
 export const LEASE_TTL_MS = 12_000;
 
@@ -114,9 +156,9 @@ interface Lease {
   heartbeat: number;
 }
 
-function readLease(): Lease | undefined {
+function readLease(sessionId: string): Lease | undefined {
   try {
-    const raw = localStorage.getItem(LEASE_KEY);
+    const raw = localStorage.getItem(leaseKey(sessionId));
     return raw ? (JSON.parse(raw) as Lease) : undefined;
   } catch {
     return undefined;
@@ -125,19 +167,21 @@ function readLease(): Lease | undefined {
 
 /** A lease held by some other tab that is still heartbeating. */
 export function liveLeaseElsewhere(sessionId: string, tabId: string, now = Date.now()): boolean {
-  const l = readLease();
+  const l = readLease(sessionId);
   return !!l && l.sessionId === sessionId && l.tabId !== tabId && now - l.heartbeat < LEASE_TTL_MS;
 }
 
 class AugurStore {
   private state: StoreState;
   private listeners = new Set<Listener>();
-  private abort: AbortController | null = null;
-  private approvals = new Map<string, (ok: boolean) => void>();
-  private pendingNotes: string[] = [];
-  private hypotheses: Hypothesis[] = [];
+  /** Runs in progress, by conversation id. */
+  private runs = new Map<string, RunCtx>();
+  /** Which conversation each pending approval belongs to. */
+  private approvalOwner = new Map<string, string>();
+  /** Notes (e.g. "user applied the dashboard") to prepend to the next message, per conversation. */
+  private pendingNotes = new Map<string, string[]>();
+  private persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private initStarted = false;
-  private persistTimer: ReturnType<typeof setTimeout> | undefined;
   private unloadHooked = false;
   private readonly tabId = `t-${Math.random().toString(36).slice(2, 10)}`;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -157,7 +201,6 @@ class AugurStore {
         persist(session);
       }
     }
-    this.hypotheses = session.hypotheses;
     this.state = {
       runningElsewhere,
       ready: false,
@@ -168,7 +211,8 @@ class AugurStore {
       history: loadHistory(),
       running: false,
       status: '',
-      usage: ZERO_USAGE,
+      usage: session.usage ?? ZERO_USAGE,
+      runs: {},
     };
     this.published = this.state;
   }
@@ -190,12 +234,18 @@ class AugurStore {
 
   private set(patch: Partial<StoreState>) {
     this.state = { ...this.state, ...patch };
-    if (this.state.running) {
+    if (this.runs.size > 0) {
       this.scheduleNotify();
     } else {
       // User actions and the end of a run render right away.
       this.notifyNow();
     }
+  }
+
+  /** For user actions: apply and render right away, even while runs are batching updates. */
+  private setNow(patch: Partial<StoreState>) {
+    this.set(patch);
+    this.notifyNow();
   }
 
   private notifyNow() {
@@ -224,23 +274,70 @@ class AugurStore {
     setTimeout(flush, 50);
   }
 
+  /** Updates the open conversation. */
   private updateSession(fn: (s: SessionState) => SessionState, immediate = false) {
-    const session = { ...fn(this.state.session), updatedAt: Date.now() };
-    this.set({ session });
-    this.schedulePersist(immediate);
+    this.updateSessionById(this.state.session.id, fn, immediate);
   }
 
-  private schedulePersist(immediate: boolean) {
-    clearTimeout(this.persistTimer);
-    if (immediate) {
-      persist(this.state.session);
+  /**
+   * Updates a conversation by id: the open one, or one running in the background (its live copy
+   * is kept on the run). Either way it is saved to history.
+   */
+  private updateSessionById(id: string, fn: (s: SessionState) => SessionState, immediate = false) {
+    const run = this.runs.get(id);
+    const isOpen = id === this.state.session.id;
+    const base = isOpen ? this.state.session : run?.session;
+    if (!base) {
       return;
     }
-    this.persistTimer = setTimeout(() => persist(this.state.session), 300);
+    const next = { ...fn(base), updatedAt: Date.now() };
+    if (run) {
+      run.session = next;
+    }
+    if (isOpen) {
+      this.set({ session: next });
+    }
+    this.schedulePersist(next, immediate);
+  }
+
+  private schedulePersist(session: SessionState, immediate: boolean) {
+    clearTimeout(this.persistTimers.get(session.id));
+    const save = () => {
+      this.persistTimers.delete(session.id);
+      if (this.disposed) {
+        return;
+      }
+      const latest = this.runs.get(session.id)?.session ?? (session.id === this.state.session.id ? this.state.session : session);
+      persist(latest, latest.id === this.state.session.id);
+    };
+    if (immediate) {
+      save();
+      return;
+    }
+    this.persistTimers.set(session.id, setTimeout(save, 300));
+  }
+
+  private pushItemTo(id: string, item: Item) {
+    this.updateSessionById(id, (s) => ({ ...s, items: [...s.items, item] }));
   }
 
   private pushItem(item: Item) {
-    this.updateSession((s) => ({ ...s, items: [...s.items, item] }));
+    this.pushItemTo(this.state.session.id, item);
+  }
+
+  /** Publishes the run summaries the conversation list shows. */
+  private publishRuns() {
+    const runs: Record<string, RunSummary> = {};
+    for (const r of this.runs.values()) {
+      runs[r.sessionId] = {
+        title: r.session.title,
+        mode: r.session.run?.mode ?? r.session.mode,
+        status: r.status,
+        startedAt: r.session.run?.startedAt ?? r.session.updatedAt,
+        pendingApprovals: r.session.items.filter((x) => x.kind === 'approval' && x.state === 'pending').length,
+      };
+    }
+    this.set({ runs });
   }
 
   // ---- initialisation ------------------------------------------------------------
@@ -279,7 +376,6 @@ class AugurStore {
       const latest = loadHistory().find((x) => x.id === id);
       if (liveLeaseElsewhere(id, this.tabId)) {
         if (latest) {
-          this.hypotheses = latest.hypotheses;
           this.set({ session: latest });
         }
         return;
@@ -291,35 +387,39 @@ class AugurStore {
         next = { ...next, run: { ...next.run, status: 'interrupted', interruptedAt: next.updatedAt } };
         persist(next);
       }
-      this.hypotheses = next.hypotheses;
       this.set({ session: next, runningElsewhere: false, history: loadHistory() });
     };
     this.watcher = setInterval(refresh, LEASE_HEARTBEAT_MS);
   }
 
-  private acquireLease(): boolean {
-    const id = this.state.session.id;
-    if (liveLeaseElsewhere(id, this.tabId)) {
+  /** Takes the cross-tab lease for a conversation's run; false if another live tab holds it. */
+  private acquireLease(sessionId: string): boolean {
+    if (liveLeaseElsewhere(sessionId, this.tabId)) {
       return false;
     }
-    const write = () => {
-      try {
-        localStorage.setItem(LEASE_KEY, JSON.stringify({ sessionId: id, tabId: this.tabId, heartbeat: Date.now() } satisfies Lease));
-      } catch {}
-    };
-    write();
-    clearInterval(this.heartbeat);
-    this.heartbeat = setInterval(write, LEASE_HEARTBEAT_MS);
+    this.writeLease(sessionId);
+    if (!this.heartbeat) {
+      // One heartbeat refreshes every lease this tab holds.
+      this.heartbeat = setInterval(() => this.runs.forEach((_, id) => this.writeLease(id)), LEASE_HEARTBEAT_MS);
+    }
     return true;
   }
 
-  private releaseLease() {
-    clearInterval(this.heartbeat);
-    const l = readLease();
-    if (l?.tabId === this.tabId) {
+  private writeLease(sessionId: string) {
+    try {
+      localStorage.setItem(leaseKey(sessionId), JSON.stringify({ sessionId, tabId: this.tabId, heartbeat: Date.now() } satisfies Lease));
+    } catch {}
+  }
+
+  private releaseLease(sessionId: string) {
+    if (readLease(sessionId)?.tabId === this.tabId) {
       try {
-        localStorage.removeItem(LEASE_KEY);
+        localStorage.removeItem(leaseKey(sessionId));
       } catch {}
+    }
+    if (this.runs.size === 0 || (this.runs.size === 1 && this.runs.has(sessionId))) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
     }
   }
 
@@ -328,10 +428,10 @@ class AugurStore {
       return;
     }
     this.unloadHooked = true;
-    window.addEventListener('pagehide', () => this.releaseLease());
+    window.addEventListener('pagehide', () => this.runs.forEach((_, id) => this.releaseLease(id)));
     window.addEventListener('beforeunload', (e) => {
-      if (this.state.running) {
-        persist(this.state.session);
+      if (this.runs.size > 0) {
+        this.runs.forEach((r) => persist(r.session, r.sessionId === this.state.session.id));
         // Ask the browser to confirm leaving while an investigation is running.
         e.preventDefault();
         // Older browsers only show the prompt when returnValue is set.
@@ -362,59 +462,78 @@ class AugurStore {
   }
 
   setModel = (model?: string) => this.set({ model });
-  setMode = (mode: AgentMode) => this.updateSession((s) => ({ ...s, mode }));
-  setRangeKey = (rangeKey: string) => this.updateSession((s) => ({ ...s, rangeKey }));
+  setMode = (mode: AgentMode) => (this.updateSession((s) => ({ ...s, mode })), this.notifyNow());
+  setRangeKey = (rangeKey: string) => (this.updateSession((s) => ({ ...s, rangeKey })), this.notifyNow());
   setSettings = (settings: AugurSettings) => this.set({ settings });
 
   // ---- agent events ------------------------------------------------------------
 
-  private onEvent = (e: AgentEvent) => {
-    switch (e.kind) {
-      case 'assistant_text':
-        this.pushItem({ kind: 'assistant', text: e.text });
-        break;
-      case 'tool_start':
-        this.pushItem({ kind: 'tool', id: e.id, name: e.name, label: e.agent ? `[${e.agent}] ${e.label}` : e.label, input: e.input, status: 'running', agent: e.agent });
-        break;
-      case 'tool_end':
-        this.updateSession((s) => ({
-          ...s,
-          items: s.items.map((x) => (x.kind === 'tool' && x.id === e.id ? { ...x, status: e.ok ? 'ok' : 'error', output: e.output, ms: e.ms } : x)),
-        }));
-        break;
-      case 'usage': {
-        const u = this.state.usage;
-        this.set({
-          usage: {
+  /** Agent events for one conversation's run; they update that conversation wherever it is. */
+  private eventsFor(run: RunCtx) {
+    const id = run.sessionId;
+    const isOpen = () => this.state.session.id === id;
+    return (e: AgentEvent) => {
+      switch (e.kind) {
+        case 'assistant_text':
+          this.pushItemTo(id, { kind: 'assistant', text: e.text });
+          break;
+        case 'tool_start':
+          this.pushItemTo(id, { kind: 'tool', id: e.id, name: e.name, label: e.agent ? `[${e.agent}] ${e.label}` : e.label, input: e.input, status: 'running', agent: e.agent });
+          break;
+        case 'tool_end':
+          this.updateSessionById(id, (s) => ({
+            ...s,
+            items: s.items.map((x) => (x.kind === 'tool' && x.id === e.id ? { ...x, status: e.ok ? 'ok' : 'error', output: e.output, ms: e.ms } : x)),
+          }));
+          break;
+        case 'usage': {
+          const u = run.usage;
+          run.usage = {
             input_tokens: u.input_tokens + (e.usage.input_tokens ?? 0),
             output_tokens: u.output_tokens + (e.usage.output_tokens ?? 0),
             cache_read_input_tokens: u.cache_read_input_tokens + (e.usage.cache_read_input_tokens ?? 0),
             cache_creation_input_tokens: u.cache_creation_input_tokens + (e.usage.cache_creation_input_tokens ?? 0),
-          },
-        });
-        break;
-      }
-      case 'status':
-        this.set({ status: e.text });
-        break;
-      case 'error':
-        this.pushItem({ kind: 'error', text: e.text });
-        break;
-      case 'done':
-        this.set({ status: '' });
-        if (e.stopReason === 'max_tokens') {
-          this.pushItem({ kind: 'notice', text: 'The response hit the output token limit. Ask Augur to continue, or raise Max output tokens on the datasource.' });
+          };
+          this.updateSessionById(id, (s) => ({ ...s, usage: run.usage }));
+          if (isOpen()) {
+            this.set({ usage: run.usage });
+          }
+          break;
         }
-        break;
-    }
-  };
+        case 'status':
+          run.status = e.text;
+          if (isOpen()) {
+            this.set({ status: e.text });
+          }
+          this.publishRuns();
+          break;
+        case 'error':
+          this.pushItemTo(id, { kind: 'error', text: e.text });
+          break;
+        case 'done':
+          run.status = '';
+          if (isOpen()) {
+            this.set({ status: '' });
+          }
+          if (e.stopReason === 'max_tokens') {
+            this.pushItemTo(id, { kind: 'notice', text: 'The response hit the output token limit. Ask Augur to continue, or raise Max output tokens on the datasource.' });
+          }
+          break;
+      }
+    };
+  }
 
   // ---- running ------------------------------------------------------------
 
   send = async (textIn: string, extra?: { context?: string; mode?: AgentMode; pageContext?: string }) => {
     const text = textIn.trim();
     const { dsUid } = this.state;
-    if (!text || this.state.running || this.state.runningElsewhere || !dsUid) {
+    const id = this.state.session.id;
+    if (!text || this.runs.has(id) || this.state.runningElsewhere || !dsUid) {
+      return;
+    }
+    if (this.runs.size >= MAX_PARALLEL_RUNS) {
+      this.pushItem({ kind: 'notice', text: `${this.runs.size} conversations are already running. Wait for one to finish or stop one, then send again.` });
       return;
     }
     const mode = extra?.mode ?? this.state.session.mode;
@@ -424,11 +543,12 @@ class AugurStore {
     if (extra?.context) {
       userText = `Context from where I opened Augur:\n${extra.context}\n\n${userText}`;
     }
-    if (this.pendingNotes.length) {
-      userText = `${this.pendingNotes.join('\n')}\n\n${userText}`;
-      this.pendingNotes = [];
+    const notes = this.pendingNotes.get(id);
+    if (notes?.length) {
+      userText = `${notes.join('\n')}\n\n${userText}`;
+      this.pendingNotes.delete(id);
     }
-    const transcript: Message[] = [...this.state.session.messages, { role: 'user', content: [{ type: 'text', text: userText }] }];
+    const transcript: Message[] = [...this.continuationOf(this.state.session), { role: 'user', content: [{ type: 'text', text: userText }] }];
     this.updateSession(
       (s) => ({
         ...s,
@@ -439,19 +559,43 @@ class AugurStore {
       }),
       true
     );
-    await this.run(transcript, mode, extra?.pageContext);
+    this.notifyNow();
+    await this.run(id, transcript, mode, extra?.pageContext);
   };
+
+  /**
+   * The model transcript to continue a conversation from. Conversations compacted to save storage
+   * keep their visible timeline but not the transcript; they continue from the visible text.
+   */
+  private continuationOf(s: SessionState): Message[] {
+    if (s.messages.length || !s.items.length) {
+      return s.messages;
+    }
+    const lines = s.items
+      .map((it) => (it.kind === 'user' ? `User: ${it.text}` : it.kind === 'assistant' ? `Augur: ${it.text}` : it.kind === 'finding' ? `Finding: ${it.finding.title}` : ''))
+      .filter(Boolean)
+      .join('\n\n')
+      .slice(-12_000);
+    return [
+      { role: 'user', content: [{ type: 'text', text: `(Earlier in this conversation; the detailed transcript is no longer stored.)\n\n${lines}` }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Understood. I have the earlier context.' }] },
+    ];
+  }
 
   /** Continues an interrupted run from its last checkpoint. */
   resume = async (pageContext?: string) => {
     const s = this.state.session;
-    if (this.state.running || !s.run || !this.state.dsUid) {
+    if (this.runs.has(s.id) || !s.run || !this.state.dsUid) {
       return;
     }
     if (liveLeaseElsewhere(s.id, this.tabId)) {
       // Another tab picked it up first.
       this.set({ runningElsewhere: true });
       this.watchOtherTab();
+      return;
+    }
+    if (this.runs.size >= MAX_PARALLEL_RUNS) {
+      this.pushItem({ kind: 'notice', text: `${this.runs.size} conversations are already running. Wait for one to finish or stop one, then resume.` });
       return;
     }
     const transcript = prepareResume(s.messages, s.run.interruptedAt ?? s.updatedAt);
@@ -462,7 +606,7 @@ class AugurStore {
       items: x.items.map((it) => (it.kind === 'tool' && it.status === 'running' ? { ...it, status: 'error', output: 'interrupted' } : it)),
       messages: transcript,
     }));
-    await this.run(transcript, s.run.mode, pageContext);
+    await this.run(s.id, transcript, s.run.mode, pageContext);
   };
 
   dismissInterrupted = () => {
@@ -476,26 +620,38 @@ class AugurStore {
     );
   };
 
-  private async run(transcript: Message[], mode: AgentMode, pageContext?: string) {
+  private async run(id: string, transcript: Message[], mode: AgentMode, pageContext?: string) {
     const { dsUid, settings, mcp, model, dsConfig } = this.state;
-    if (!dsUid) {
+    const start = id === this.state.session.id ? this.state.session : undefined;
+    if (!dsUid || !start) {
       return;
     }
-    if (!this.acquireLease()) {
+    if (!this.acquireLease(id)) {
       this.set({ runningElsewhere: true });
       this.watchOtherTab();
       return;
     }
     const ac = new AbortController();
-    this.abort = ac;
-    this.set({ running: true });
-    this.updateSession((s) => ({ ...s, run: { status: 'running', mode, startedAt: Date.now() } }), true);
+    const run: RunCtx = {
+      sessionId: id,
+      session: start,
+      abort: ac,
+      approvals: new Map(),
+      hypotheses: start.hypotheses,
+      status: '',
+      usage: start.usage ?? ZERO_USAGE,
+    };
+    this.runs.set(id, run);
+    this.setNow({ running: true, usage: run.usage });
+    this.updateSessionById(id, (s) => ({ ...s, run: { status: 'running', mode, startedAt: Date.now() } }), true);
+    this.publishRuns();
+    const onEvent = this.eventsFor(run);
 
     const now = Date.now();
-    const range = { from: now - (RANGE_MS[this.state.session.rangeKey] ?? 36e5), to: now };
+    const range = { from: now - (RANGE_MS[run.session.rangeKey] ?? 36e5), to: now };
     const datasources = listDataSources();
     const user = config.bootData?.user;
-    const call = datasourceModelCaller(dsUid, (attempt, reason) => this.set({ status: `Gateway unavailable (${reason}); retrying (${attempt}/4)…` }));
+    const call = datasourceModelCaller(dsUid, (attempt, reason) => onEvent({ kind: 'status', text: `Gateway unavailable (${reason}); retrying (${attempt}/4)…` }));
     const subAgents = mode === 'investigate' && settings.enableSubAgents !== false;
     const skills = settings.skills ?? [];
     const promptBase = {
@@ -514,16 +670,16 @@ class AugurStore {
     };
     const system = buildSystemPrompt({ ...promptBase, mode, subAgents });
     const propose = (p: Proposal) =>
-      this.updateSession((s) => ({ ...s, proposals: { ...s.proposals, [p.id]: p }, items: [...s.items, { kind: 'proposal', id: p.id }] }), true);
+      this.updateSessionById(id, (s) => ({ ...s, proposals: { ...s.proposals, [p.id]: p }, items: [...s.items, { kind: 'proposal', id: p.id }] }), true);
     const tools = buildToolset(mode, {
       propose,
       skills,
       memory: settings.memory,
       mcp: mcpTools(mcp, dsUid),
-      delegate: subAgents ? { call, model, maxTokens: dsConfig?.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent: this.onEvent } : undefined,
+      delegate: subAgents ? { call, model, maxTokens: dsConfig?.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent } : undefined,
     });
 
-    const startTokens = effectiveTokens(this.state.usage);
+    const startTokens = effectiveTokens(run.usage);
     const ceiling = settings.maxTokensPerRun ?? DEFAULT_MAX_TOKENS_PER_RUN;
     let completed = false;
     try {
@@ -535,13 +691,13 @@ class AugurStore {
         model,
         maxTokens: dsConfig?.maxTokens,
         maxSteps: (mode === 'investigate' ? settings.stepBudget?.investigate : settings.stepBudget?.chat) ?? STEP_BUDGET[mode],
-        onEvent: this.onEvent,
+        onEvent,
         // Checkpoint: the transcript is persisted after every model response and tool batch.
-        onProgress: (msgs) => this.updateSession((s) => ({ ...s, messages: [...msgs] }), true),
-        beforeFinish: mode === 'investigate' ? () => conclusionGate(this.hypotheses) : undefined,
+        onProgress: (msgs) => this.updateSessionById(id, (s) => ({ ...s, messages: [...msgs] }), true),
+        beforeFinish: mode === 'investigate' ? () => conclusionGate(run.hypotheses) : undefined,
         afterTools: mode === 'investigate' ? stateReminder() : undefined,
         budgetExceeded: () => {
-          const used = effectiveTokens(this.state.usage) - startTokens;
+          const used = effectiveTokens(run.usage) - startTokens;
           return used > ceiling ? `Token budget for this run is used up (${Math.round(used / 1000)}k of ${Math.round(ceiling / 1000)}k).` : undefined;
         },
         ctx: {
@@ -551,97 +707,177 @@ class AugurStore {
           now: () => Date.now(),
           signal: ac.signal,
           propose,
+          latestDraft: () => latestDashboardDraft(run.session),
           recordEvidence: (e: Omit<EvidenceRecord, 'id'>) => {
-            const id = `E${(this.state.session.evidence?.length ?? 0) + 1}`;
-            this.updateSession((s) => ({ ...s, evidence: [...(s.evidence ?? []), { ...e, id }] }));
-            return id;
+            const evId = `E${(run.session.evidence?.length ?? 0) + 1}`;
+            this.updateSessionById(id, (s) => ({ ...s, evidence: [...(s.evidence ?? []), { ...e, id: evId }] }));
+            return evId;
           },
-          recordFinding: (f: Finding) => this.updateSession((s) => ({ ...s, findings: [...s.findings, f], items: [...s.items, { kind: 'finding', finding: f }] })),
+          recordFinding: (f: Finding) => this.updateSessionById(id, (s) => ({ ...s, findings: [...s.findings, f], items: [...s.items, { kind: 'finding', finding: f }] })),
           updateHypothesis: (h: Hypothesis) => {
-            this.hypotheses = [...this.hypotheses.filter((x) => x.id !== h.id), h];
-            this.updateSession((s) => ({ ...s, hypotheses: this.hypotheses }));
+            run.hypotheses = [...run.hypotheses.filter((x) => x.id !== h.id), h];
+            this.updateSessionById(id, (s) => ({ ...s, hypotheses: run.hypotheses }));
           },
           confirm: (r) =>
             new Promise<boolean>((resolve) => {
-              const id = `a-${Math.random().toString(36).slice(2, 9)}`;
+              const approvalId = `a-${Math.random().toString(36).slice(2, 9)}`;
               const onAbort = () => resolve(false);
-              this.approvals.set(id, (ok) => {
+              run.approvals.set(approvalId, (ok) => {
                 ac.signal.removeEventListener('abort', onAbort);
                 resolve(ok);
               });
-              this.pushItem({ kind: 'approval', id, title: r.title, detail: r.detail, state: 'pending' });
+              this.approvalOwner.set(approvalId, id);
+              this.pushItemTo(id, { kind: 'approval', id: approvalId, title: r.title, detail: r.detail, state: 'pending' });
+              this.publishRuns();
               ac.signal.addEventListener('abort', onAbort, { once: true });
             }),
         },
       });
       completed = true;
-      this.updateSession((s) => ({ ...s, messages }));
+      this.updateSessionById(id, (s) => ({ ...s, messages }));
     } finally {
-      this.abort = null;
-      this.releaseLease();
-      this.set({ running: false, status: '' });
-      this.updateSession(
-        (s) => ({
-          ...s,
-          run: completed || ac.signal.aborted ? undefined : s.run,
-          items: s.items.map((x) =>
-            x.kind === 'tool' && x.status === 'running'
-              ? { ...x, status: 'error', output: 'cancelled' }
-              : x.kind === 'approval' && x.state === 'pending'
-                ? { ...x, state: 'denied' }
-                : x
-          ),
-        }),
-        true
-      );
-      this.set({ history: loadHistory() });
+      this.runs.delete(id);
+      this.releaseLease(id);
+      for (const approvalId of run.approvals.keys()) {
+        this.approvalOwner.delete(approvalId);
+      }
+      const finished = (s: SessionState): SessionState => ({
+        ...s,
+        run: completed || ac.signal.aborted ? undefined : s.run,
+        items: s.items.map((x) =>
+          x.kind === 'tool' && x.status === 'running'
+            ? { ...x, status: 'error', output: 'cancelled' }
+            : x.kind === 'approval' && x.state === 'pending'
+              ? { ...x, state: 'denied' }
+              : x
+        ),
+      });
+      if (this.disposed) {
+        return;
+      }
+      if (id === this.state.session.id) {
+        this.updateSession(finished, true);
+      } else {
+        persist(finished({ ...run.session, updatedAt: Date.now() }), false);
+      }
+      this.publishRuns();
+      this.setNow({ ...(id === this.state.session.id ? { running: false, status: '' } : {}), history: loadHistory() });
     }
   }
 
-  resolveApproval = (id: string, ok: boolean) => {
-    this.approvals.get(id)?.(ok);
-    this.approvals.delete(id);
-    this.updateSession((s) => ({ ...s, items: s.items.map((x) => (x.kind === 'approval' && x.id === id ? { ...x, state: ok ? 'approved' : 'denied' } : x)) }));
+  resolveApproval = (approvalId: string, ok: boolean) => {
+    const owner = this.approvalOwner.get(approvalId) ?? this.state.session.id;
+    const run = this.runs.get(owner);
+    run?.approvals.get(approvalId)?.(ok);
+    run?.approvals.delete(approvalId);
+    this.approvalOwner.delete(approvalId);
+    this.updateSessionById(owner, (s) => ({ ...s, items: s.items.map((x) => (x.kind === 'approval' && x.id === approvalId ? { ...x, state: ok ? 'approved' : 'denied' } : x)) }));
+    this.publishRuns();
+    this.notifyNow();
   };
 
   noteApplied = (text: string, url?: string) => {
-    this.pendingNotes.push(`(Note: ${text}${url ? ` — ${url}` : ''})`);
+    const id = this.state.session.id;
+    this.pendingNotes.set(id, [...(this.pendingNotes.get(id) ?? []), `(Note: ${text}${url ? ` — ${url}` : ''})`]);
     this.pushItem({ kind: 'notice', text, url });
   };
 
-  stop = () => this.abort?.abort();
+  /** Stops the open conversation's run (others keep going). */
+  stop = () => this.runs.get(this.state.session.id)?.abort.abort();
+
+  /** Stops every run in this tab. */
+  stopAll = () => this.runs.forEach((r) => r.abort.abort());
+
+  /** Set when the store is thrown away: late saves from runs it stopped are ignored. */
+  private disposed = false;
 
   /** Stops timers (tests and hot reload). */
   dispose() {
+    this.disposed = true;
     clearInterval(this.heartbeat);
+    this.heartbeat = undefined;
     clearInterval(this.watcher);
+    this.persistTimers.forEach((t) => clearTimeout(t));
   }
 
+  /** Starts a new conversation. Runs in other conversations keep going. */
   reset = () => {
-    this.abort?.abort();
-    this.pendingNotes = [];
-    this.hypotheses = [];
     const s = newSession(this.state.session.mode, this.state.session.rangeKey);
     setCurrent(undefined);
     clearInterval(this.watcher);
-    this.set({ session: s, usage: ZERO_USAGE, history: loadHistory(), runningElsewhere: false });
+    this.setNow({ session: s, running: false, status: '', usage: ZERO_USAGE, history: loadHistory(), runningElsewhere: false });
   };
 
+  /** Opens a conversation. If it is running (in this tab), you see it live; nothing is stopped. */
   open = (id: string) => {
-    const s = loadHistory().find((x) => x.id === id);
-    if (s) {
-      this.abort?.abort();
-      this.hypotheses = s.hypotheses;
-      const elsewhere = s.run?.status === 'running' && liveLeaseElsewhere(s.id, this.tabId);
-      this.set({ session: s, runningElsewhere: elsewhere });
-      setCurrent(id);
-      this.watchOtherTab();
+    if (id === this.state.session.id) {
+      return;
     }
+    const run = this.runs.get(id);
+    const s = run?.session ?? loadHistory().find((x) => x.id === id);
+    if (!s) {
+      return;
+    }
+    // Save the conversation being left (it may have unsaved edits).
+    if (this.state.session.items.length && !this.runs.has(this.state.session.id)) {
+      persist(this.state.session, false);
+    }
+    let session = s;
+    let elsewhere = false;
+    if (!run && s.run?.status === 'running') {
+      elsewhere = liveLeaseElsewhere(s.id, this.tabId);
+      if (!elsewhere) {
+        session = { ...s, run: { ...s.run, status: 'interrupted', interruptedAt: s.updatedAt } };
+        persist(session, false);
+      }
+    }
+    this.setNow({
+      session,
+      running: !!run,
+      status: run?.status ?? '',
+      usage: run?.usage ?? session.usage ?? ZERO_USAGE,
+      runningElsewhere: elsewhere,
+      history: loadHistory(),
+    });
+    setCurrent(id);
+    this.watchOtherTab();
   };
 
   remove = (id: string) => {
+    this.runs.get(id)?.abort.abort();
     deleteSession(id);
-    this.set({ history: loadHistory() });
+    if (id === this.state.session.id) {
+      this.reset();
+      return;
+    }
+    this.setNow({ history: loadHistory() });
+  };
+
+  rename = (id: string, title: string) => {
+    const t = title.trim().slice(0, 120);
+    if (!t) {
+      return;
+    }
+    if (id === this.state.session.id || this.runs.has(id)) {
+      this.updateSessionById(id, (s) => ({ ...s, title: t }), true);
+    } else {
+      patchStored(id, { title: t });
+    }
+    this.setNow({ history: loadHistory() });
+    this.publishRuns();
+  };
+
+  togglePin = (id: string) => {
+    const current = id === this.state.session.id ? this.state.session : (this.runs.get(id)?.session ?? loadHistory().find((x) => x.id === id));
+    if (!current) {
+      return;
+    }
+    if (id === this.state.session.id || this.runs.has(id)) {
+      this.updateSessionById(id, (s) => ({ ...s, pinned: !s.pinned }), true);
+    } else {
+      patchStored(id, { pinned: !current.pinned });
+    }
+    this.setNow({ history: loadHistory() });
   };
 
   saveInvestigation = async (folderUid?: string) => {
@@ -681,7 +917,7 @@ export function getStore(): AugurStore {
 
 /** Test helper: drops the singleton so each test starts from storage. */
 export function resetStoreForTests() {
-  store?.stop();
   store?.dispose();
+  store?.stopAll();
   store = undefined;
 }

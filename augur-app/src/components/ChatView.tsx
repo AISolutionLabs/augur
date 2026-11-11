@@ -8,11 +8,9 @@ import {
   Button,
   Combobox,
   ComboboxOption,
-  Dropdown,
   Icon,
   IconButton,
   LinkButton,
-  Menu,
   Modal,
   RadioButtonGroup,
   Spinner,
@@ -30,6 +28,7 @@ import { Markdown } from './Markdown';
 import { ToolStep } from './ToolStep';
 import { ProposalCard } from './ProposalCards';
 import { InvestigationPanel } from './InvestigationPanel';
+import { Conversations } from './Conversations';
 
 const RANGES: Array<ComboboxOption<string>> = [
   { label: 'Last 15 minutes', value: '15m' },
@@ -81,9 +80,17 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const [saveError, setSaveError] = useState<string | undefined>();
   const [showPanel, setShowPanel] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(() => readRailPref());
+  const [listOpen, setListOpen] = useState(false);
+  const toggleRail = () => {
+    setRailOpen(!railOpen);
+    writeRailPref(!railOpen);
+  };
   const [prefs, setPrefs] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const { session } = s;
+  // Runs in other conversations (the open one shows its own status).
+  const runningCount = Object.keys(s.runs).filter((id) => id !== session.id).length;
   const mode = session.mode;
 
   // Follow the conversation only while the user is at the bottom, and jump instead of animating:
@@ -166,21 +173,6 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
     }
   };
 
-  const historyMenu = (
-    <Menu>
-      {s.history.length === 0 && <Menu.Item label="No previous conversations" disabled />}
-      {s.history.slice(0, 15).map((h) => (
-        <Menu.Item
-          key={h.id}
-          label={`${h.mode === 'investigate' ? '🔎 ' : ''}${h.title}`}
-          description={new Date(h.updatedAt).toLocaleString()}
-          active={h.id === session.id}
-          onClick={() => s.open(h.id)}
-        />
-      ))}
-    </Menu>
-  );
-
   const toolbar = (
     <Stack gap={1} alignItems="center" wrap="wrap">
       <RadioButtonGroup size={variant === 'sidebar' ? 'sm' : 'md'} options={MODES} value={mode} onChange={s.setMode} disabled={s.running} />
@@ -197,9 +189,14 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
         />
       )}
       <Combobox width={variant === 'sidebar' ? 16 : 18} options={RANGES} value={session.rangeKey} onChange={(v) => s.setRangeKey(v.value)} aria-label="Time range" />
-      <Dropdown overlay={historyMenu}>
-        <IconButton name="history" tooltip="History" aria-label="History" />
-      </Dropdown>
+      <IconButton
+        name="history"
+        tooltip={runningCount ? `Conversations (${runningCount} running)` : 'Conversations'}
+        aria-label="Conversations"
+        aria-expanded={variant === 'page' ? railOpen : listOpen}
+        onClick={() => (variant === 'page' ? toggleRail() : setListOpen(!listOpen))}
+      />
+      {runningCount > 0 && <Badge color="blue" icon="sync" text={`${runningCount} running`} />}
       <IconButton name="plus" tooltip="New conversation" aria-label="New conversation" onClick={s.reset} />
       <IconButton
         name="user"
@@ -217,9 +214,26 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   );
 
   return (
-    <div className={cx(st.layout, variant === 'page' && isInvestigation && st.withSidebar, variant === 'sidebar' && st.compact)}>
-      <div className={st.main}>
-        {toolbar}
+    <div
+      className={cx(
+        st.layout,
+        variant === 'page' && railOpen && (isInvestigation ? st.withRailAndSidebar : st.withRail),
+        variant === 'page' && !railOpen && isInvestigation && st.withSidebar,
+        variant === 'sidebar' && st.compact
+      )}
+    >
+      {variant === 'page' && railOpen && (
+        <aside className={st.rail} aria-label="Conversations">
+          <Conversations s={s} />
+        </aside>
+      )}
+      <div className={cx(st.main, variant === 'sidebar' && listOpen && st.listMode)}>
+        <div data-keep>{toolbar}</div>
+        {variant === 'sidebar' && listOpen && (
+          <div data-keep className={st.listPane}>
+            <Conversations s={s} onOpened={() => setListOpen(false)} />
+          </div>
+        )}
         {s.configError && (
           <Alert severity="error" title="Claude datasource problem">
             {s.configError}
@@ -437,6 +451,22 @@ function TimelineItem({ it, s, latestDraft }: { it: Item; s: AugurSession; lates
 const getStyles = (t: GrafanaTheme2) => ({
   layout: css({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: t.spacing(2), height: '100%' }),
   withSidebar: css({ [t.breakpoints.up('lg')]: { gridTemplateColumns: 'minmax(0, 1fr) 340px' } }),
+  withRail: css({ [t.breakpoints.up('md')]: { gridTemplateColumns: '260px minmax(0, 1fr)' } }),
+  withRailAndSidebar: css({
+    [t.breakpoints.up('md')]: { gridTemplateColumns: '260px minmax(0, 1fr)' },
+    [t.breakpoints.up('xl')]: { gridTemplateColumns: '260px minmax(0, 1fr) 340px' },
+  }),
+  rail: css({
+    borderRight: `1px solid ${t.colors.border.weak}`,
+    paddingRight: t.spacing(1.5),
+    minHeight: 0,
+    maxHeight: 'calc(100vh - 160px)',
+    position: 'sticky',
+    top: 0,
+    [t.breakpoints.down('md')]: { display: 'none' },
+  }),
+  listMode: css({ '& > :not([data-keep])': { display: 'none' } }),
+  listPane: css({ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }),
   compact: css({ padding: t.spacing(1), gap: t.spacing(1) }),
   main: css({ display: 'flex', flexDirection: 'column', gap: t.spacing(1.5), minHeight: 0 }),
   timeline: css({ display: 'flex', flexDirection: 'column', gap: t.spacing(1.5), flex: 1, minHeight: 200 }),
@@ -536,6 +566,7 @@ const Composer = React.memo(
           </div>
         )}
         <TextArea
+          aria-label="Message Augur"
           rows={rows}
           value={text}
           placeholder={placeholder}
@@ -556,3 +587,17 @@ const Composer = React.memo(
     );
   })
 );
+
+const RAIL_KEY = 'augur-assistant-app/conversations-rail';
+function readRailPref(): boolean {
+  try {
+    return localStorage.getItem(RAIL_KEY) !== 'closed';
+  } catch {
+    return true;
+  }
+}
+function writeRailPref(open: boolean) {
+  try {
+    localStorage.setItem(RAIL_KEY, open ? 'open' : 'closed');
+  } catch {}
+}

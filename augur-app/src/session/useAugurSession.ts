@@ -1,9 +1,9 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { AgentMode } from '../agent/types';
 import { describeLocation } from './pageContext';
-import { getStore, RANGE_MS, expandSlashCommand } from './store';
+import { getStore, MAX_PARALLEL_RUNS, RANGE_MS, expandSlashCommand } from './store';
 
-export { RANGE_MS, expandSlashCommand };
+export { MAX_PARALLEL_RUNS, RANGE_MS, expandSlashCommand };
 
 export interface SessionOptions {
   variant: 'page' | 'sidebar';
@@ -37,6 +37,8 @@ export function useAugurSession(opts: SessionOptions) {
     reset: store.reset,
     open: store.open,
     remove: store.remove,
+    rename: store.rename,
+    togglePin: store.togglePin,
     resolveApproval: store.resolveApproval,
     noteApplied: store.noteApplied,
     saveInvestigation: store.saveInvestigation,

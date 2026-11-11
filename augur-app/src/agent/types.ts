@@ -140,6 +140,8 @@ export interface ToolContext {
   recordEvidence?: (e: Omit<EvidenceRecord, 'id'>) => string;
   /** Set by the runner for the duration of one tool call. */
   currentTool?: { name: string; id: string };
+  /** The newest unsaved dashboard draft in this conversation (for incremental edits). */
+  latestDraft?: () => import('./dashboard').DashboardDraft | undefined;
 }
 
 export interface Finding {
