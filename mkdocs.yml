@@ -1,0 +1,98 @@
+site_name: Augur
+site_description: The self-hosted AI assistant for Grafana. Your model, your network, no Grafana Cloud.
+site_url: https://aniaiapps.github.io/augur/
+repo_url: https://github.com/AniAIApps/augur
+repo_name: AniAIApps/augur
+edit_uri: edit/main/docs/
+copyright: MIT licensed. Grafana is a trademark of Raintank, Inc. (Grafana Labs). Claude is a trademark of Anthropic, PBC. Augur is an independent project, not affiliated with or endorsed by either.
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: orange
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: orange
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/crystal-ball
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc: { permalink: true }
+  - pymdownx.details
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.tabbed: { alternate_style: true }
+  - pymdownx.tasklist: { custom_checkbox: true }
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quick start (Docker): getting-started/quick-start.md
+      - Install in your Grafana: getting-started/install.md
+      - Kubernetes and Helm: getting-started/kubernetes.md
+      - Plugin signing: getting-started/signing.md
+  - Configure:
+      - Model datasource: configure/datasource.md
+      - Models and providers: configure/models.md
+      - Authentication and OAuth: configure/auth.md
+      - TLS and internal CAs: configure/tls.md
+      - MCP servers: configure/mcp.md
+      - Rules, skills and memory: configure/app-settings.md
+  - Use Augur:
+      - Chat and entry points: guide/chat.md
+      - Conversations: guide/conversations.md
+      - Investigations: guide/investigations.md
+      - Building dashboards: guide/dashboards.md
+      - Alerts and silences: guide/alerting.md
+      - Reports and export: guide/reports.md
+  - Operate:
+      - Security model: operate/security.md
+      - Permissions: operate/permissions.md
+      - Troubleshooting: operate/troubleshooting.md
+      - Headless runner: operate/headless.md
+  - Reference:
+      - How it works: reference/architecture.md
+      - Tools: reference/tools.md
+      - Datasource settings: reference/datasource-settings.md
+      - App settings: reference/app-settings.md
+      - Compared with Grafana Assistant: reference/comparison.md
+      - Development and testing: reference/development.md
+      - Changelog: reference/changelog.md

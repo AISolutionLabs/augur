@@ -11,6 +11,8 @@ Augur adds a Claude-powered observability engineer to self-hosted Grafana (OSS o
 
 Data queries run **as the signed-in user** through Grafana's own APIs, so Grafana RBAC applies. Model calls go through your gateway (LiteLLM, the Anthropic API, or any Claude Messages-compatible endpoint), using **either a gateway API key or each user's own OAuth/OIDC token** (e.g. Entra ID). Nothing leaves your network except the model call you configure.
 
+📖 **Documentation: [aniaiapps.github.io/augur](https://aniaiapps.github.io/augur/)**: installation, configuration, models and providers, security, and guides.
+
 ![Augur investigating a checkout latency incident: specialist sub-agents, hypothesis board and findings](docs/img/augur-investigation.gif)
 
 <sub>The real Augur UI (Grafana UI components) running a scripted demo incident; see <a href="scripts/screenshots">scripts/screenshots</a>. More: <a href="docs/img/augur-investigation.png">full investigation report</a> · <a href="docs/img/augur-proposals.png">dashboard, alert-rule and silence proposals</a>.</sub>
