@@ -228,6 +228,19 @@ export default function AppConfig({ plugin }: Props) {
                 <Input type="number" width={12} placeholder="45" value={settings.stepBudget?.investigate ?? ''} onChange={(e) => patch({ stepBudget: { ...settings.stepBudget, investigate: Number(e.currentTarget.value) || undefined } })} />
               </Stack>
             </Field>
+            <Field
+              label="Keep conversations for (days)"
+              description="Conversations are stored in each user's browser. Those not updated for this many days are deleted the next time Augur opens (pinned ones are kept). Empty keeps the 60 most recent."
+            >
+              <Input
+                type="number"
+                width={20}
+                aria-label="Keep conversations for (days)"
+                placeholder="no limit"
+                value={settings.historyRetentionDays ?? ''}
+                onChange={(e) => patch({ historyRetentionDays: Number(e.currentTarget.value) || undefined })}
+              />
+            </Field>
           </FieldSet>
         )}
       </TabContent>

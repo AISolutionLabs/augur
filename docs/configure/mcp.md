@@ -53,7 +53,10 @@ flowchart TD
 
 - Read-only is the **admin's** decision. A server's own `readOnlyHint` is self-declared and ignored unless you set `trustReadOnlyHints`.
 - Investigation sub-agents only get read-only tools.
-- Responses are capped at 8 MiB; discovery at 50 pages / 512 tools. Every call is logged with the tool, its read-only classification and the user.
+- **Fresh catalog for every decision.** The tool list shown to the model is cached for 5 minutes, but a call is authorized against a list at most a minute old, so a tool the server withdrew stops being callable quickly.
+- **Definitions are fingerprinted.** Each listed tool carries a fingerprint of its description, schema and annotations, and calls send the fingerprint the model and user saw. If the server redefined the tool since (say its description now says it also deletes forks), the call is refused with `409 tool_changed` and the list reloads.
+- **Strict protocol checks.** Responses must be valid JSON-RPC 2.0 with the request's id and exactly one of result or error, over JSON, batch or SSE alike.
+- Responses are capped at 8 MiB; discovery at 50 pages / 512 tools. Every call is logged with the tool, its read-only classification and the user. Augur identifies itself to MCP servers as `augur-grafana` with its plugin version.
 
 !!! tip "Recommendations"
     Keep `allowedTools` narrow, list read-only tools explicitly, leave `trustReadOnlyHints` off for servers you don't run, and keep `writeRole` at Editor or Admin.

@@ -256,21 +256,22 @@ export async function runHeadless(cfg: HeadlessConfig, opts: { call?: ModelCalle
   // the tool call that produced it so the model sees failures (as a user would).
   let pending: Array<Promise<string>> = [];
   const drafts: DashboardDraft[] = [];
-  const savedUids = new Map<string, string>(); // draft lineage → saved dashboard uid
+  const saved = new Map<string, { uid: string; version?: number }>(); // draft lineage → saved dashboard
   const propose =
     cfg.apply === 'auto'
       ? (p: Proposal) => {
           // A revision updates the dashboard saved from an earlier version of the same draft instead of adding another.
           const lineage = p.kind === 'dashboard' ? p.draft.lineage ?? p.draft.id : undefined;
-          const replaceUid = lineage ? savedUids.get(lineage) : undefined;
+          const prior = lineage ? saved.get(lineage) : undefined;
+          const replaceUid = prior?.uid;
           if (p.kind === 'dashboard') {
             drafts.push(p.draft);
           }
           pending.push(
-            applyProposal(http, p, { folderUid: cfg.folderUid, login: user.login ?? 'augur-headless', replaceUid }).then(
+            applyProposal(http, p, { folderUid: cfg.folderUid, login: user.login ?? 'augur-headless', replaceUid, replaceVersion: prior?.version }).then(
               (r) => {
                 if (lineage) {
-                  savedUids.set(lineage, replaceUid ?? r.url.match(/\/d\/([^/]+)/)?.[1] ?? (p as { draft: DashboardDraft }).draft.json.uid);
+                  saved.set(lineage, { uid: r.uid ?? replaceUid ?? r.url.match(/\/d\/([^/]+)/)?.[1] ?? (p as { draft: DashboardDraft }).draft.json.uid, version: r.version });
                 }
                 applied.push({ kind: p.kind, message: r.message, url: r.url });
                 return `[applied automatically: ${r.message} → ${r.url}]`;

@@ -34,6 +34,17 @@ test('does not retry client errors or context overflow, and gives up after the l
 });
 
 
+test('backend limits: a spent budget fails at once; rate and concurrency limits are retried', async () => {
+  const retries: string[] = [];
+  const call = datasourceModelCaller('claude', (n, why) => retries.push(`${n}:${why}`), [1, 1]);
+  responses.push({ error: { status: 429, data: { error: { type: 'budget_exceeded', message: 'your daily token budget on this datasource (2M tokens) is used up' } } } });
+  await expect(call({ messages: [] }, new AbortController().signal)).rejects.toThrow(/daily token budget/);
+  expect(retries).toEqual([]);
+  responses.push({ error: { status: 429, data: { error: { type: 'concurrency_limit_exceeded', message: 'too many' } } } }, ok);
+  await expect(call({ messages: [] }, new AbortController().signal)).resolves.toMatchObject({ id: 'm' });
+  expect(retries).toEqual(['1:HTTP 429']);
+});
+
 test('abort listeners are removed when operations settle (no accumulation on a long-lived signal)', async () => {
   const ac = new AbortController();
   const added = jest.spyOn(ac.signal, 'addEventListener');

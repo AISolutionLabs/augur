@@ -36,6 +36,15 @@
 ??? failure "*Prompt is too long*"
     Augur compacts older tool results and retries once automatically. If it keeps happening, the model has a small context window: choose a larger model or narrow the question.
 
+??? failure "HTTP 429: daily token budget used up, rate limit, or too many calls in progress"
+    The datasource's [limits](../configure/datasource.md#limits) refused the call. Rate and concurrency limits clear on their own (Augur retries). A daily budget resets at 00:00 UTC; ask an admin to raise it.
+
+??? failure "*tool … was redefined by the server since it was listed*"
+    The MCP server changed that tool's definition after Augur listed it, so the call was refused. The tool list reloads automatically; review the tool and ask again.
+
+??? failure "*… was changed in Grafana since Augur saved it*"
+    Someone edited the dashboard after Augur saved it, so **Update saved dashboard** didn't overwrite their changes. Use **Save as new**, or open the dashboard and ask Augur to edit it from its current state.
+
 ??? failure "Run stopped: token ceiling reached"
     The run hit `maxTokensPerRun` (default 1.5M) and answered from what it had. Raise it in the app settings if long investigations are expected.
 

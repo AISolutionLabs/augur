@@ -80,7 +80,29 @@ type PluginSettings struct {
 	// MCP servers whose tools Augur may use, proxied through this backend.
 	MCPServers []MCPServer `json:"mcpServers"`
 
+	// Limits on model use, enforced here regardless of what the browser does.
+	Limits Limits `json:"limits"`
+
 	Secrets *SecretPluginSettings `json:"-"`
+}
+
+// DefaultMaxConcurrentPerUser allows three parallel conversations, each with a lead agent and up
+// to four sub-agents, with headroom.
+const DefaultMaxConcurrentPerUser = 16
+
+// Limits bounds model use per Grafana user and per datasource. They are enforced by this backend
+// (per Grafana replica), so a client calling the resource API directly is bound by them too.
+// Zero means the default for MaxConcurrentPerUser and "no limit" for the others.
+type Limits struct {
+	// MaxConcurrentPerUser: model calls one user may have in flight at once. Negative disables.
+	MaxConcurrentPerUser int `json:"maxConcurrentPerUser,omitempty"`
+	// RequestsPerMinutePerUser: model calls per user in any 60-second window.
+	RequestsPerMinutePerUser int `json:"requestsPerMinutePerUser,omitempty"`
+	// TokensPerUserPerDay: effective tokens per user per UTC day (input + output + cache writes,
+	// cache reads weighted 10%, the same weighting as the per-run budget in the app).
+	TokensPerUserPerDay int64 `json:"tokensPerUserPerDay,omitempty"`
+	// TokensPerDay: effective tokens for all users of this datasource per UTC day.
+	TokensPerDay int64 `json:"tokensPerDay,omitempty"`
 }
 
 // MCP server auth modes.
@@ -198,6 +220,9 @@ func (s *PluginSettings) applyDefaults() {
 	}
 	if s.TimeoutSeconds <= 0 {
 		s.TimeoutSeconds = DefaultTimeoutSeconds
+	}
+	if s.Limits.MaxConcurrentPerUser == 0 {
+		s.Limits.MaxConcurrentPerUser = DefaultMaxConcurrentPerUser
 	}
 	cleaned := make([]string, 0, len(s.AllowedModels))
 	for _, m := range s.AllowedModels {

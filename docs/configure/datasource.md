@@ -21,6 +21,7 @@ Add it under **Connections → Data sources → Add data source → Claude (Augu
 | **TLS** | Extra CA certificates for internal endpoints. See [TLS and internal CAs](tls.md). |
 | **Extra headers** | Static, non-secret headers sent upstream (for example LiteLLM tags). They can't override auth headers. |
 | **MCP servers** | Remote tool servers. See [MCP servers](mcp.md). |
+| **Limits** | Per-user concurrency, rate and daily token budgets, enforced server-side. See [below](#limits). |
 
 **Show models** in the editor previews exactly which models users will be offered.
 
@@ -29,6 +30,22 @@ Add it under **Connections → Data sources → Add data source → Claude (Augu
 **Save & test** checks that the endpoint is reachable with the configured credentials and TLS settings. It reports an unreadable or invalid CA, a connection failure, or credentials the endpoint rejects (401/403). Use **Show models** to check the model list.
 
 With **Forward OAuth token**, the test runs as you. It fails if you didn't sign in through OAuth.
+
+## Limits
+
+Limits are enforced by the datasource backend for every caller, including scripts that call Grafana's resource API directly, so they hold even if someone bypasses the app.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| **Concurrent calls per user** | 16 | Model calls one user may have in flight. Three parallel conversations with sub-agents fit comfortably. `-1` disables. |
+| **Calls per minute per user** | none | Rolling 60-second window |
+| **Tokens per user per day** | none | Effective tokens (input + output + cache writes, cache reads at 10%), reset at 00:00 UTC |
+| **Tokens per day (all users)** | none | The same, for everyone using this datasource |
+
+Refused calls get `429`. Rate and concurrency limits clear on their own, and Augur retries them with backoff. A spent daily budget is shown to the user straight away, without retries.
+
+!!! note "Scope"
+    Counters live in the memory of each Grafana replica and reset on restart. They bound runaway use (a stuck client, a compromised account) well. For organisation-wide spend control across replicas, also set budgets at your gateway (LiteLLM keys, teams and budgets).
 
 ## Provisioning
 
@@ -51,6 +68,10 @@ datasources:
       tlsCACertFile: /etc/ssl/internal/ca.pem
       extraHeaders:
         x-litellm-tags: grafana-augur
+      limits:
+        maxConcurrentPerUser: 16
+        requestsPerMinutePerUser: 60
+        tokensPerUserPerDay: 5000000
     secureJsonData:
       apiKey: ${LITELLM_KEY}
 ```

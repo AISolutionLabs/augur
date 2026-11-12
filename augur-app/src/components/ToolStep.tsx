@@ -31,7 +31,7 @@ export function ToolStep({ item }: { item: ToolItem }) {
           <pre className={s.pre}>{JSON.stringify(item.input, null, 2)}</pre>
           {item.output !== undefined && (
             <>
-              <div className={s.caption}>Result sent to Claude</div>
+              <div className={s.caption}>Result sent to the model</div>
               <pre className={s.pre}>{item.output}</pre>
             </>
           )}

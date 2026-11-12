@@ -18,10 +18,12 @@ Switching conversations doesn't stop a run. Up to **three** conversations can ru
 
 ## Several tabs
 
-Only one tab drives a given run at a time. Other tabs show *Running in another tab*, and take over automatically if that tab goes away (a 12-second lease). Different conversations can run in different tabs.
+Only one tab drives a given conversation's run. It holds a browser lock (the Web Locks API), so two tabs can't both start it even at the same instant. Other tabs show *Running in another tab*, and can resume it if that tab goes away. Different conversations can run in different tabs.
 
 ## Where conversations are stored
 
-In your browser's local storage, per Grafana origin. Augur keeps the **60** most recent, and pinned ones stay at the top. When storage gets tight it compacts older conversations first (drops the step-by-step transcript, then shortens long tool outputs) before removing any.
+In your browser's local storage, per Grafana origin, unencrypted. Augur keeps the **60** most recent, and pinned ones stay at the top. When storage gets tight it compacts older conversations first (drops the step-by-step transcript, then shortens long tool outputs) before removing any. Your admin may also set a retention period, after which unpinned conversations are deleted.
+
+**Deleting is final.** A deleted conversation is stopped and can't come back: not from a run that was still finishing, a pending save, or another tab.
 
 Conversations don't sync across browsers or devices. To share an investigation, [save it to Grafana or export it](reports.md).

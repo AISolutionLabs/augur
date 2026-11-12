@@ -33,12 +33,25 @@ export interface SessionState {
   pinned?: boolean;
   /** Token usage of this conversation (all runs). */
   usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+  /** The latest investigation in this conversation: what was asked, when, and over which window. */
+  investigation?: InvestigationMeta;
   /** Present while an agent run is in progress or was interrupted (page reload, crash). */
   run?: { status: 'running' | 'interrupted'; mode: AgentMode; startedAt: number; interruptedAt?: number };
 }
 
+export interface InvestigationMeta {
+  question: string;
+  startedAt: number;
+  completedAt?: number;
+  /** The absolute window the agent was given (epoch ms). */
+  range: { from: number; to: number };
+}
+
 const HISTORY_KEY = `${PLUGIN_ID}/history`;
 const CURRENT_KEY = `${PLUGIN_ID}/current`;
+/** Ids of deleted conversations: nothing may write them back (late saves, other tabs). */
+const DELETED_KEY = `${PLUGIN_ID}/deleted`;
+const MAX_TOMBSTONES = 500;
 export const MAX_SESSIONS = 60;
 const MAX_BYTES = 3_500_000;
 /** Tool outputs of conversations that had to be compacted are cut to this many characters. */
@@ -130,11 +143,11 @@ export function compactHistory(list: SessionState[], maxBytes = MAX_BYTES, keepI
  * conversations are saved without changing which one the user is looking at.
  */
 export function persist(session: SessionState, makeCurrent = true) {
-  if (!session.items.length) {
+  if (!session.items.length || isDeleted(session.id)) {
     return;
   }
   try {
-    const others = loadHistory().filter((s) => s.id !== session.id);
+    const others = pruneExpired(loadHistory().filter((s) => s.id !== session.id));
     const pinned = others.filter((s) => s.pinned);
     const rest = others.filter((s) => !s.pinned);
     let list = [session, ...pinned, ...rest];
@@ -179,8 +192,54 @@ export function setCurrent(id: string | undefined) {
   } catch {}
 }
 
+function tombstones(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(DELETED_KEY) ?? '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/** True once a conversation has been deleted (in any tab). */
+export function isDeleted(id: string): boolean {
+  return tombstones().includes(id);
+}
+
+/**
+ * Deletes a conversation for good: it is removed from history and tombstoned, so a run that is
+ * still unwinding, a pending debounced save or another tab cannot write it back.
+ */
 export function deleteSession(id: string) {
   try {
+    localStorage.setItem(DELETED_KEY, JSON.stringify([id, ...tombstones().filter((x) => x !== id)].slice(0, MAX_TOMBSTONES)));
     localStorage.setItem(HISTORY_KEY, JSON.stringify(loadHistory().filter((s) => s.id !== id)));
+    if (localStorage.getItem(CURRENT_KEY) === id) {
+      localStorage.removeItem(CURRENT_KEY);
+    }
   } catch {}
+}
+
+let retentionMs = 0;
+
+/** Conversations not updated for this many days are deleted (0 keeps them until the count limit). */
+export function setHistoryRetentionDays(days: number | undefined) {
+  retentionMs = days && days > 0 ? days * 86_400_000 : 0;
+  if (retentionMs) {
+    try {
+      const list = loadHistory();
+      const kept = pruneExpired(list);
+      if (kept.length !== list.length) {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(kept));
+      }
+    } catch {}
+  }
+}
+
+/** Drops conversations past the retention period. Pinned ones and live runs are kept. */
+function pruneExpired(list: SessionState[], now = Date.now()): SessionState[] {
+  if (!retentionMs) {
+    return list;
+  }
+  return list.filter((s) => s.pinned || s.run?.status === 'running' || now - s.updatedAt <= retentionMs);
 }

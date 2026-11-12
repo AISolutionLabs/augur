@@ -344,3 +344,46 @@ describe('context management', () => {
     expect(text).toContain('WARN pool exhausted');
   });
 });
+
+describe('agent loop limits', () => {
+  const base = (call: any, extra: any = {}) => {
+    const events: AgentEvent[] = [];
+    return {
+      events,
+      run: () =>
+        runAgent({ call, tools: buildToolset('chat'), system: 'sys', messages: [{ role: 'user', content: 'go' }], ctx: ctxWith(fakeHttp(() => [])), onEvent: (e) => events.push(e), maxSteps: 5, ...extra }),
+    };
+  };
+  const done = (events: AgentEvent[]) => events.find((e) => e.kind === 'done') as Extract<AgentEvent, { kind: 'done' }>;
+
+  it('a model that keeps pausing is stopped after a few consecutive pauses', async () => {
+    let n = 0;
+    const call = async () => (n++, { id: 'm', type: 'message', role: 'assistant', model: 'x', stop_reason: 'pause_turn', content: [{ type: 'text', text: '…' }] }) as any;
+    const { events, run } = base(call);
+    await run();
+    expect(n).toBe(4); // three tolerated continuations, then stop
+    expect(done(events).stopReason).toBe('pause_limit');
+  });
+
+  it('pauses interleaved with tool calls never pass the hard cap', async () => {
+    let n = 0;
+    const call = async () => {
+      n++;
+      return (n % 2
+        ? { stop_reason: 'pause_turn', content: [] }
+        : { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `t${n}`, name: 'get_annotations', input: {} }] }) as any;
+    };
+    const { events, run } = base(call);
+    await run();
+    expect(n).toBeLessThanOrEqual(5 + 4);
+    expect(['max_steps', 'end_turn', 'tool_use']).toContain(done(events).stopReason);
+  });
+
+  it('a pause after the token budget is spent stops the run', async () => {
+    const call = async () => ({ stop_reason: 'pause_turn', content: [] }) as any;
+    const { events, run } = base(call, { budgetExceeded: () => 'Token budget for this run is used up.' });
+    await run();
+    expect(done(events).stopReason).toBe('budget');
+    expect(events.some((e) => e.kind === 'error' && /Token budget/.test(e.text))).toBe(true);
+  });
+});

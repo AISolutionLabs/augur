@@ -11,6 +11,8 @@ export interface McpToolInfo {
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; title?: string };
   /** Augur's effective read-only decision, made by the backend from the admin's policy. */
   augurReadOnly?: boolean;
+  /** Fingerprint of the definition as listed; calls carry it so a redefined tool is refused. */
+  augurFingerprint?: string;
 }
 
 export interface McpCatalog {
@@ -53,7 +55,11 @@ export function mcpToolName(server: string, tool: string, taken: Set<string>): s
   return `${plain.slice(0, 64 - suffix.length)}${suffix}`;
 }
 
-export function mcpTools(catalog: McpCatalog, dsUid: string): ToolDefinition[] {
+/**
+ * The model-facing tools for an MCP catalog. onStale is called when the backend reports that a tool
+ * was redefined by its server since it was listed (the caller should reload the catalog).
+ */
+export function mcpTools(catalog: McpCatalog, dsUid: string, onStale?: () => void): ToolDefinition[] {
   const out: ToolDefinition[] = [];
   const taken = new Set<string>();
   for (const server of catalog.servers) {
@@ -81,11 +87,20 @@ export function mcpTools(catalog: McpCatalog, dsUid: string): ToolDefinition[] {
               return 'The user declined this tool call. Do not retry it; continue without it or ask the user.';
             }
           }
-          const r = await ctx.http.post<{ content?: Array<{ type: string; text?: string; [k: string]: unknown }>; isError?: boolean; structuredContent?: unknown }>(
-            `/api/datasources/uid/${encodeURIComponent(dsUid)}/resources/mcp/call`,
-            { server: server.name, tool: t.name, arguments: input },
-            ctx.signal
-          );
+          type McpResult = { content?: Array<{ type: string; text?: string; [k: string]: unknown }>; isError?: boolean; structuredContent?: unknown };
+          let r: McpResult;
+          try {
+            r = await ctx.http.post<McpResult>(
+              `/api/datasources/uid/${encodeURIComponent(dsUid)}/resources/mcp/call`,
+              { server: server.name, tool: t.name, arguments: input, fingerprint: t.augurFingerprint },
+              ctx.signal
+            );
+          } catch (e) {
+            if ((e as { status?: number; data?: { error?: { type?: string } } })?.data?.error?.type === 'tool_changed') {
+              onStale?.();
+            }
+            throw e;
+          }
           const text = (r?.content ?? [])
             .map((c) => (c.type === 'text' ? c.text : c.type === 'resource' ? JSON.stringify(c.resource ?? c) : `[${c.type} content omitted]`))
             .join('\n');

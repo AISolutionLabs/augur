@@ -20,7 +20,8 @@ import {
 } from '@grafana/ui';
 
 import { AgentMode } from '../agent/types';
-import { AugurSession, RANGE_MS } from '../session/useAugurSession';
+import { AugurSession } from '../session/useAugurSession';
+import { investigationReportMeta } from '../session/store';
 import { Item } from '../session/history';
 import { buildReport, download, printHtml, ReportInput, reportHtml } from '../report';
 import { loadPersonalRules, newId, savePersonalRules } from '../settings';
@@ -141,20 +142,18 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   };
 
   const reportInput = (): ReportInput => {
-    const finalAnswer = [...session.items].reverse().find((x) => x.kind === 'assistant') as { text: string } | undefined;
-    const first = session.items.find((x) => x.kind === 'user') as { text: string } | undefined;
-    const now = Date.now();
+    const meta = investigationReportMeta(session);
     return {
-      title: `Investigation: ${first?.text ?? session.title}`.slice(0, 120),
-      question: first?.text ?? '',
-      range: { from: session.createdAt - (RANGE_MS[session.rangeKey] ?? 36e5), to: now },
-      finalAnswer: finalAnswer?.text ?? '',
+      title: meta.title,
+      question: meta.question,
+      range: meta.range,
+      finalAnswer: meta.finalAnswer,
       findings: session.findings,
       hypotheses: session.hypotheses,
       queries: session.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ label: x.label, ok: x.status === 'ok' })),
       ledger: session.evidence,
       user: config.bootData?.user?.login,
-      generatedAt: now,
+      generatedAt: Date.now(),
     };
   };
 
@@ -240,7 +239,7 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
           </div>
         )}
         {s.configError && (
-          <Alert severity="error" title="Claude datasource problem">
+          <Alert severity="error" title="Model datasource problem">
             {s.configError}
           </Alert>
         )}

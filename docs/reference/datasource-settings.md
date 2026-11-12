@@ -25,6 +25,10 @@ All fields of the `augur-claude-datasource` datasource, for provisioning.
 | `tlsSkipVerify` | bool | `false` | Skip TLS verification (not recommended) |
 | `extraHeaders` | map | none | Static, non-secret headers sent upstream; can't override auth |
 | `mcpServers` | list | none | See [MCP servers](../configure/mcp.md) |
+| `limits.maxConcurrentPerUser` | int | `16` | Model calls in flight per user; negative disables |
+| `limits.requestsPerMinutePerUser` | int | none | Calls per user per rolling minute |
+| `limits.tokensPerUserPerDay` | int | none | Effective tokens per user per UTC day |
+| `limits.tokensPerDay` | int | none | Effective tokens for the datasource per UTC day |
 
 ## secureJsonData
 

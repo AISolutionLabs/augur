@@ -128,7 +128,9 @@ export function datasourceModelCaller(uid: string, onRetry?: (attempt: number, r
         const fe = e as FetchError<any>;
         const status = typeof fe?.status === 'number' ? fe.status : 0;
         const msg = fe?.data?.error?.message ?? fe?.data?.message ?? (e as Error)?.message ?? 'request failed';
-        if (RETRYABLE_STATUS.has(status) && attempt < backoff.length && !/prompt is too long|context/i.test(msg)) {
+        // A spent daily budget won't come back by retrying (rate and concurrency limits will).
+        const final = fe?.data?.error?.type === 'budget_exceeded';
+        if (RETRYABLE_STATUS.has(status) && !final && attempt < backoff.length && !/prompt is too long|context/i.test(msg)) {
           onRetry?.(attempt + 1, status ? `HTTP ${status}` : 'network error');
           await sleep(jittered(backoff[attempt]), signal);
           continue;

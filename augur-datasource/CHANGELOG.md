@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+
+- **Usage limits enforced by the backend** (`limits`): concurrent model calls per user (default 16), calls per minute per user, tokens per user per day and tokens per day for the datasource, using the same effective-token weighting as the app's per-run budget. They apply to any caller of the resource API, so they can't be bypassed by skipping the app. Refusals are `429` with a typed error (`rate_limit_exceeded`, `concurrency_limit_exceeded` with `Retry-After`, or `budget_exceeded`). Counters are per datasource and per Grafana replica, kept across settings changes and reset on restart. New *Limits* section in the config editor.
+- **MCP responses are validated the same way for every transport**: JSON-RPC 2.0, matching request id, exactly one of result or error. Single JSON responses previously skipped the id check.
+- **MCP catalog freshness**: calls are authorized against a tool list at most a minute old (the listing cache stays 5 minutes) and the cache is invalidated when a tool is missing; each listed tool carries a definition fingerprint (`augurFingerprint`), and a call whose fingerprint no longer matches is refused with `409 tool_changed`.
+- The MCP client reports the plugin's real version (from Grafana) instead of a hard-coded `1.2.0`.
+- Provider-neutral messages ("model endpoint" instead of "Claude endpoint").
+
 ## 1.5.2
 
 - Repository moved to [AniAIApps/augur](https://github.com/AniAIApps/augur): plugin links and the Go module path updated. No functional changes.

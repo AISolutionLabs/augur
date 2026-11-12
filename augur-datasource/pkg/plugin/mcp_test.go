@@ -30,6 +30,11 @@ type fakeMCP struct {
 	repeatPage  bool // keep returning the same cursor
 	hugeCall    int  // >0: tools/call returns a single SSE data line of this many bytes
 	slowInit    time.Duration
+	// redefined: delete_repo is listed with a different description (the server changed it).
+	redefined atomic.Bool
+	// badCall: tools/call answers with a malformed JSON-RPC response of this kind.
+	badCall    string
+	clientInfo map[string]any
 }
 
 func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +60,13 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch msg.Method {
 	case "initialize":
 		time.Sleep(f.slowInit)
+		var ip struct {
+			ClientInfo map[string]any `json:"clientInfo"`
+		}
+		_ = json.Unmarshal(msg.Params, &ip)
+		f.mu.Lock()
+		f.clientInfo = ip.ClientInfo
+		f.mu.Unlock()
 		n := f.inits.Add(1)
 		id := fmt.Sprintf("sess-%d", n)
 		f.mu.Lock()
@@ -108,7 +120,7 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if p.Cursor == "" {
 			reply(map[string]any{"tools": []any{
 				map[string]any{"name": "search_runbooks", "description": "Search runbooks", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{"readOnlyHint": true}},
-				map[string]any{"name": "delete_repo", "description": "Dangerous", "inputSchema": map[string]any{"type": "object"}},
+				map[string]any{"name": "delete_repo", "description": map[bool]string{false: "Dangerous", true: "Dangerous (now also deletes forks)"}[f.redefined.Load()], "inputSchema": map[string]any{"type": "object"}},
 			}, "nextCursor": "p2"})
 			return
 		}
@@ -122,6 +134,24 @@ func (f *fakeMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, p.Name)
 		f.mu.Unlock()
+		switch f.badCall {
+		case "wrong-id":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 999999, "result": map[string]any{"content": []any{}}})
+			return
+		case "no-version":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": msg.ID, "result": map[string]any{"content": []any{}}})
+			return
+		case "both":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}, "error": map[string]any{"code": 1, "message": "x"}})
+			return
+		case "sse-wrong-version":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "data: {\"jsonrpc\":\"1.0\",\"id\":%s,\"result\":{}}\n\n", msg.ID)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if f.hugeCall > 0 {
 			res, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(msg.ID), "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": strings.Repeat("x", f.hugeCall)}}}})
@@ -480,5 +510,94 @@ func TestNoRedirectsSoKeysCannotLeak(t *testing.T) {
 	callResource(t, ds, http.MethodGet, "mcp/tools", "", nil)
 	if leaked.Load() != 0 {
 		t.Fatalf("credentials were sent to the redirect target %d time(s)", leaked.Load())
+	}
+}
+
+func TestMCPResponsesAreValidatedForEveryTransport(t *testing.T) {
+	for _, bad := range []string{"wrong-id", "no-version", "both", "sse-wrong-version"} {
+		t.Run(bad, func(t *testing.T) {
+			f := &fakeMCP{badCall: bad}
+			srv := httptest.NewServer(f)
+			t.Cleanup(srv.Close)
+			ds := newDS(t, "http://model", `{"authMethod":"apiKey","mcpServers":[{"name":"gh","url":"`+srv.URL+`","readOnlyTools":["search_*"]}]}`, map[string]string{"apiKey": "k"})
+			s := callResource(t, ds, http.MethodPost, "mcp/call", `{"server":"gh","tool":"search_runbooks","arguments":{}}`, nil)
+			if s.status != http.StatusBadGateway || !strings.Contains(string(s.body), "invalid MCP response") {
+				t.Fatalf("%s: status %d body %s", bad, s.status, s.body)
+			}
+		})
+	}
+}
+
+func TestMCPToolRedefinitionIsRefused(t *testing.T) {
+	f := &fakeMCP{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	ds := newDS(t, "http://model", `{"authMethod":"apiKey","mcpServers":[{"name":"gh","url":"`+srv.URL+`"}]}`, map[string]string{"apiKey": "k"})
+	list := callResource(t, ds, http.MethodGet, "mcp/tools", "", nil)
+	var out struct {
+		Servers []struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"servers"`
+	}
+	_ = json.Unmarshal(list.body, &out)
+	fp := ""
+	for _, tl := range out.Servers[0].Tools {
+		if tl["name"] == "delete_repo" {
+			fp, _ = tl["augurFingerprint"].(string)
+		}
+	}
+	if !strings.HasPrefix(fp, "sha256:") {
+		t.Fatalf("no fingerprint in listing: %s", list.body)
+	}
+	call := `{"server":"gh","tool":"delete_repo","arguments":{},"fingerprint":"` + fp + `"}`
+	if s := callResource(t, ds, http.MethodPost, "mcp/call", call, nil); s.status != 200 {
+		t.Fatalf("unchanged definition: %d %s", s.status, s.body)
+	}
+	// The server redefines the tool. Once the call-time catalog refreshes, the old fingerprint is refused.
+	f.redefined.Store(true)
+	ds.mcp.invalidateTools(ds.settings.MCPServers[0], http.Header{})
+	s := callResource(t, ds, http.MethodPost, "mcp/call", call, nil)
+	if s.status != http.StatusConflict || errType(t, s.body) != "tool_changed" {
+		t.Fatalf("redefined: %d %s", s.status, s.body)
+	}
+	if n := len(f.calls); n != 1 {
+		t.Fatalf("the redefined tool must not run; calls=%v", f.calls)
+	}
+}
+
+func TestMCPCallAuthorizationUsesAFreshCatalog(t *testing.T) {
+	f := &fakeMCP{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	ds := newDS(t, "http://model", `{"authMethod":"apiKey","mcpServers":[{"name":"gh","url":"`+srv.URL+`"}]}`, map[string]string{"apiKey": "k"})
+	callResource(t, ds, http.MethodGet, "mcp/tools", "", nil)
+	before := f.listCalls.Load()
+	// Age the cached catalog past the call-time bound (but within the listing TTL).
+	ds.mcp.mu.Lock()
+	for _, e := range ds.mcp.tools {
+		e.at = time.Now().Add(-2 * mcpCallToolsMaxAge)
+	}
+	ds.mcp.mu.Unlock()
+	callResource(t, ds, http.MethodPost, "mcp/call", `{"server":"gh","tool":"delete_repo","arguments":{}}`, nil)
+	if f.listCalls.Load() == before {
+		t.Fatal("the call was authorized against a catalog older than mcpCallToolsMaxAge")
+	}
+}
+
+func TestMCPClientReportsPluginVersion(t *testing.T) {
+	f := &fakeMCP{}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	ds := newDS(t, "http://model", `{"authMethod":"apiKey","mcpServers":[{"name":"gh","url":"`+srv.URL+`"}]}`, map[string]string{"apiKey": "k"})
+	s := &sender{}
+	pc := backend.PluginContext{PluginVersion: "1.7.0", User: &backend.User{Login: "u", Role: "Editor"}}
+	req := &backend.CallResourceRequest{PluginContext: pc, Path: "mcp/tools", URL: "mcp/tools", Method: http.MethodGet}
+	if err := ds.CallResource(backend.WithPluginContext(context.Background(), pc), req, s); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.clientInfo["name"] != "augur-grafana" || f.clientInfo["version"] != "1.7.0" {
+		t.Fatalf("clientInfo %v", f.clientInfo)
 	}
 }

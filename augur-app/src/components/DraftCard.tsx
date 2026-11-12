@@ -15,6 +15,8 @@ interface SavedDraft {
   uid: string;
   url: string;
   revision: number;
+  /** Grafana's version of the saved dashboard; updates only go through if it is unchanged. */
+  version?: number;
   at: number;
 }
 
@@ -75,9 +77,9 @@ export function DraftCard({ draft, superseded, onSaved }: Props) {
     setError(undefined);
     try {
       const replaceUid = replace ? prior?.uid : undefined;
-      const r = await applyProposal(grafanaHttp, { kind: 'dashboard', id: draft.id, draft }, { folderUid: folder, replaceUid });
-      const uid = replaceUid ?? /\/d\/([^/]+)/.exec(r.url)?.[1] ?? draft.json.uid;
-      const entry = { uid, url: r.url, revision, at: Date.now() };
+      const r = await applyProposal(grafanaHttp, { kind: 'dashboard', id: draft.id, draft }, { folderUid: folder, replaceUid, replaceVersion: replace ? prior?.version : undefined });
+      const uid = r.uid ?? replaceUid ?? /\/d\/([^/]+)/.exec(r.url)?.[1] ?? draft.json.uid;
+      const entry = { uid, url: r.url, revision, version: r.version, at: Date.now() };
       writeSaved(lineage, entry);
       setPrior(entry);
       setSaved({ url: r.url });
@@ -140,9 +142,9 @@ export function DraftCard({ draft, superseded, onSaved }: Props) {
               <div className={s.folder}>
                 <Combobox options={folders} value={folder} onChange={(v) => setFolder(v.value)} aria-label="Folder" />
               </div>
-              {prior ? (
+              {prior?.version !== undefined ? (
                 <>
-                  <Button icon="save" onClick={() => save(true)} disabled={saving} tooltip={`Overwrites the dashboard saved from revision ${prior.revision}`}>
+                  <Button icon="save" onClick={() => save(true)} disabled={saving} tooltip={`Replaces the dashboard saved from revision ${prior.revision}, unless it was changed in Grafana since`}>
                     {saving ? 'Saving…' : 'Update saved dashboard'}
                   </Button>
                   <Button variant="secondary" onClick={() => save(false)} disabled={saving}>

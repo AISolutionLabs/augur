@@ -73,6 +73,7 @@ investigationFolderUid: incident-reviews
 maxTokensPerRun: 1500000       # per run, sub-agents included (cache reads weighted 10%)
 stepBudget: { chat: 15, investigate: 45 }
 enableSubAgents: true          # parallel specialists in investigations
+historyRetentionDays: 30       # delete browser-stored conversations not updated for 30 days (pinned kept)
 ```
 
 ## Provisioning everything

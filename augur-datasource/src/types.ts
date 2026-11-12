@@ -32,6 +32,8 @@ export interface ClaudeDataSourceOptions extends DataSourceJsonData {
   modelDiscovery?: 'endpoint' | 'off';
   maxTokens?: number;
   timeoutSeconds?: number;
+  /** Per-user and per-datasource limits enforced by the backend. */
+  limits?: UsageLimits;
   extraHeaders?: Record<string, string>;
   mcpServers?: McpServerConfig[];
 }
@@ -55,4 +57,12 @@ export interface ClaudeSecureJsonData {
   tlsCACert?: string;
   /** mcpToken_<server name> */
   [key: string]: string | undefined;
+}
+
+export interface UsageLimits {
+  /** Model calls one user may have in flight (default 16; negative disables). */
+  maxConcurrentPerUser?: number;
+  requestsPerMinutePerUser?: number;
+  tokensPerUserPerDay?: number;
+  tokensPerDay?: number;
 }

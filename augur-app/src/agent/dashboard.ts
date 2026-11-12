@@ -961,6 +961,6 @@ export async function saveDashboard(http: GrafanaHttp, draft: DashboardDraft, fo
     dashboard: draft.json,
     folderUid: folderUid ?? draft.folderUid ?? '',
     overwrite: false,
-    message: 'Created with Claude',
+    message: 'Created with Augur',
   });
 }

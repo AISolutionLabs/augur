@@ -24,7 +24,7 @@ Opens your browser's print dialog with a print-ready report. Choose **Save as PD
 
 The PDF contains:
 
-- a header with the question, the time window (UTC), who ran it and when
+- a header with the question that started the investigation, the time window (UTC), who ran it and when
 - the write-up, formatted
 - findings with severity badges
 - hypotheses with status and confidence
@@ -35,6 +35,10 @@ It's generated in your browser from the conversation: no server, no external ser
 
 !!! tip
     In the print dialog, turn off **Headers and footers** for a cleaner PDF, and keep **Background graphics** on so the badges print in color.
+
+## Question and time window
+
+Reports use the question that started the investigation (a conversation can hold several) and the window the agent was given, widened to cover every query in the evidence ledger, so a report never claims less than was examined.
 
 ## The evidence ledger
 

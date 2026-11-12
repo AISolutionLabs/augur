@@ -52,6 +52,8 @@ export interface AugurSettings {
   maxTokensPerRun?: number;
   /** Allow sub-agents in investigations (default true) */
   enableSubAgents?: boolean;
+  /** Conversations in users' browsers not updated for this many days are deleted (pinned ones kept). Empty keeps them. */
+  historyRetentionDays?: number;
 }
 
 export async function loadSettings(http: GrafanaHttp): Promise<AugurSettings> {

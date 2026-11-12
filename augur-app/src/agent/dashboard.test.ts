@@ -351,15 +351,21 @@ describe('saving revisions', () => {
   const { applyProposal } = jest.requireActual('./apply');
   const draft = { title: 'Svc', revision: 3, folderUid: 'f1', json: { uid: 'new-uid', title: 'Svc', panels: [] } };
 
-  it('overwrites the already-saved dashboard when replaceUid is given', async () => {
-    const http = fakeHttp(() => ({ url: '/d/saved-uid/svc' }));
-    const r = await applyProposal(http, { kind: 'dashboard', draft } as any, { replaceUid: 'saved-uid' });
+  it('updates the saved dashboard only if it is still at the version Augur saved', async () => {
+    const http = fakeHttp(() => ({ url: '/d/saved-uid/svc', uid: 'saved-uid', version: 8 }));
+    const r = await applyProposal(http, { kind: 'dashboard', draft } as any, { replaceUid: 'saved-uid', replaceVersion: 7 });
     expect(http.calls[0]).toMatchObject({
       method: 'POST',
       url: '/api/dashboards/db',
-      body: { dashboard: { uid: 'saved-uid', id: null }, folderUid: 'f1', overwrite: true, message: 'Augur: revision 3' },
+      body: { dashboard: { uid: 'saved-uid', id: null, version: 7 }, folderUid: 'f1', overwrite: false, message: 'Augur: revision 3' },
     });
-    expect(r).toEqual({ message: 'Updated dashboard "Svc" (revision 3)', url: '/d/saved-uid/svc' });
+    expect(r).toEqual({ message: 'Updated dashboard "Svc" (revision 3)', url: '/d/saved-uid/svc', uid: 'saved-uid', version: 8 });
+
+    const changed = fakeHttp(() => {
+      throw Object.assign(new Error('version-mismatch'), { status: 412 });
+    });
+    await expect(applyProposal(changed, { kind: 'dashboard', draft } as any, { replaceUid: 'saved-uid', replaceVersion: 7 })).rejects.toThrow(/changed in Grafana since Augur saved it/);
+    await expect(applyProposal(http, { kind: 'dashboard', draft } as any, { replaceUid: 'saved-uid' })).rejects.toThrow(/version of the saved dashboard is unknown/);
   });
 
   it('creates a new dashboard otherwise', async () => {

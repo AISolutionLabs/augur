@@ -10,14 +10,14 @@ export function NoDatasource() {
   return (
     <EmptyState
       variant="call-to-action"
-      message="Connect Augur to Claude"
+      message="Connect Augur to a model"
       button={
         <Button icon="plus" onClick={() => (window.location.href = '/connections/datasources/new')}>
-          Add Claude datasource
+          Add model datasource
         </Button>
       }
     >
-      Add a <b>Claude (Augur)</b> datasource (Connections → Data sources) pointing at your LiteLLM proxy or the Anthropic API, using an API key or by forwarding each user&apos;s OAuth token.
+      Add a <b>Claude (Augur)</b> datasource (Connections → Data sources) pointing at your LiteLLM proxy, the Anthropic API or an OpenAI-compatible endpoint, using an API key or by forwarding each user&apos;s OAuth token.
     </EmptyState>
   );
 }

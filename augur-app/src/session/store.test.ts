@@ -1,6 +1,7 @@
+let mockFetch: (opts: { url: string }) => unknown = () => undefined;
 jest.mock('@grafana/runtime', () => ({
   config: { bootData: { user: { login: 'u', timezone: 'utc' } }, buildInfo: { version: '13.2.4' } },
-  getBackendSrv: () => ({ fetch: jest.fn() }),
+  getBackendSrv: () => ({ fetch: (o: { url: string }) => mockFetch(o) }),
   getDataSourceSrv: () => ({ getList: () => [] }),
   locationService: { push: jest.fn() },
 }));
@@ -74,5 +75,84 @@ describe('history compaction', () => {
     expect(out.map((x: any) => x.id)).toContain('pinned');
     expect(out.map((x: any) => x.id)).toContain('new');
     expect(out.map((x: any) => x.id)).not.toContain('oldest');
+  });
+});
+
+describe('investigation report metadata', () => {
+  const { investigationReportMeta } = jest.requireActual('./store');
+  const H = 3_600_000;
+  const t0 = Date.UTC(2026, 10, 12, 8);
+  const base = {
+    id: 's',
+    title: 'morning chat',
+    mode: 'investigate',
+    rangeKey: '1h',
+    createdAt: t0,
+    updatedAt: t0 + 5 * H,
+    items: [
+      { kind: 'user', text: 'what dashboards do we have?', mode: 'chat' },
+      { kind: 'assistant', text: 'A few.' },
+      { kind: 'user', text: 'checkout errors spiked', mode: 'investigate' },
+      { kind: 'assistant', text: '## Root cause\nDeploy.' },
+    ],
+    messages: [],
+    proposals: {},
+    findings: [],
+    hypotheses: [],
+  };
+
+  it('uses the question and window of the investigation, not the conversation start', () => {
+    const s = { ...base, investigation: { question: 'checkout errors spiked', startedAt: t0 + 5 * H, range: { from: t0 + 4 * H, to: t0 + 5 * H } } };
+    const m = investigationReportMeta(s, t0 + 6 * H);
+    expect(m.question).toBe('checkout errors spiked');
+    expect(m.title).toBe('Investigation: checkout errors spiked');
+    expect(m.range).toEqual({ from: t0 + 4 * H, to: t0 + 5 * H });
+    expect(m.finalAnswer).toBe('## Root cause\nDeploy.');
+  });
+
+  it('widens the window to cover every query in the evidence ledger', () => {
+    const s = {
+      ...base,
+      investigation: { question: 'q', startedAt: t0 + 5 * H, range: { from: t0 + 4 * H, to: t0 + 5 * H } },
+      evidence: [{ id: 'E1', from: new Date(t0 + 1 * H).toISOString(), to: new Date(t0 + 5 * H + 60_000).toISOString() }],
+    };
+    expect(investigationReportMeta(s, t0 + 6 * H).range).toEqual({ from: t0 + 1 * H, to: t0 + 5 * H + 60_000 });
+  });
+
+  it('falls back to the last investigate question for conversations saved before 1.7', () => {
+    const m = investigationReportMeta(base, t0 + 6 * H);
+    expect(m.question).toBe('checkout errors spiked');
+    expect(m.range.to).toBe(t0 + 5 * H);
+  });
+});
+
+describe('switching datasources', () => {
+  afterEach(() => resetStoreForTests());
+
+  it('a slow response for the previously selected datasource never overwrites the current one', async () => {
+    const { Subject } = jest.requireActual('rxjs');
+    const pending: Record<string, any> = {};
+    mockFetch = (o) => {
+      const m = /uid\/([^/]+)\/resources\/(config|mcp\/tools)/.exec(o.url);
+      const key = m ? `${m[1]}:${m[2]}` : o.url;
+      return (pending[key] = new Subject());
+    };
+    const reply = (key: string, data: unknown) => {
+      pending[key].next({ data });
+      pending[key].complete();
+    };
+    const store = getStore() as any;
+    store.setDsUid('a');
+    store.setDsUid('b');
+    reply('b:config', { defaultModel: 'model-b', models: ['model-b'], mcpServers: ['wiki'] });
+    await new Promise((r) => setTimeout(r, 0));
+    reply('a:config', { defaultModel: 'model-a', models: ['model-a'], mcpServers: ['other'] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.getState().dsConfig.defaultModel).toBe('model-b');
+    expect(store.getState().model).toBe('model-b');
+    // The MCP catalog of the old selection is discarded too.
+    reply('b:mcp/tools', { servers: [{ name: 'wiki', tools: [] }] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.getState().mcp.servers.map((x: any) => x.name)).toEqual(['wiki']);
   });
 });

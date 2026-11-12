@@ -40,6 +40,9 @@ export interface RunOptions {
   budgetExceeded?: () => string | undefined;
 }
 
+/** Consecutive pause_turn responses tolerated before the run stops. */
+export const MAX_CONSECUTIVE_PAUSES = 3;
+
 /** Runs the tool-use loop until the model stops calling tools. Returns the updated conversation. */
 export async function runAgent(opts: RunOptions): Promise<Message[]> {
   const { call, tools, ctx, onEvent } = opts;
@@ -49,10 +52,19 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
   let steps = 0;
   let finalCall = false;
   let gated = false;
+  let pauses = 0;
+  // Every model response counts as a step. Headroom over maxSteps covers the forced final answer,
+  // the conclusion gate and a few server-side pauses; nothing can loop past it.
+  const hardCap = opts.maxSteps + 4;
 
   while (true) {
     if (ctx.signal.aborted) {
       onEvent({ kind: 'done', stopReason: 'aborted', steps });
+      return messages;
+    }
+    if (steps >= hardCap) {
+      onEvent({ kind: 'error', text: `Stopped after ${steps} model calls (the limit for this run).` });
+      onEvent({ kind: 'done', stopReason: 'max_steps', steps });
       return messages;
     }
     const budget = opts.contextTokenBudget ?? DEFAULT_TOKEN_BUDGET;
@@ -97,8 +109,17 @@ export async function runAgent(opts: RunOptions): Promise<Message[]> {
 
     const toolUses = content.filter((b): b is ToolUseBlock => b.type === 'tool_use');
     if (resp.stop_reason === 'pause_turn') {
+      // The server paused a long turn; continue it, but within the same limits as everything else.
+      pauses++;
+      const over = opts.budgetExceeded?.();
+      if (pauses > MAX_CONSECUTIVE_PAUSES || over) {
+        onEvent({ kind: 'error', text: over ?? `The model paused ${pauses} times in a row; stopping.` });
+        onEvent({ kind: 'done', stopReason: over ? 'budget' : 'pause_limit', steps });
+        return messages;
+      }
       continue;
     }
+    pauses = 0;
     if (!toolUses.length && !finalCall && !gated && opts.beforeFinish && resp.stop_reason === 'end_turn') {
       gated = true;
       const nudge = opts.beforeFinish();

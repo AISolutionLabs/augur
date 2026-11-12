@@ -1,10 +1,11 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { previewModel, panelQueryBody, resolveDatasource } from './draftPreviewModel';
 
 const posted: Array<{ url: string; data: any }> = [];
 const rendered: any[] = [];
+let conflict = false;
 
 jest.mock('react-use', () => ({ ...jest.requireActual('react-use'), useMeasure: () => [() => undefined, { width: 480, height: 0 }] }));
 jest.mock('@grafana/runtime', () => ({
@@ -35,7 +36,11 @@ jest.mock('@grafana/runtime', () => ({
         });
       }
       if (opts.url === '/api/dashboards/db') {
-        return of({ data: { url: `/d/${opts.data.dashboard.uid ?? 'gen'}/svc` } });
+        if (conflict) {
+          return throwError(() => ({ status: 412, data: { status: 'version-mismatch', message: 'The dashboard has been changed by someone else' } }));
+        }
+        const uid = opts.data.dashboard.uid ?? 'gen';
+        return of({ data: { url: `/d/${uid}/svc`, uid, version: (opts.data.dashboard.version ?? 0) + 1 } });
       }
       return of({ data: [] });
     },
@@ -58,6 +63,7 @@ const json = {
 const draft = (over: any = {}) => ({ id: 'd1', title: 'Svc', json, outline: ['RPS — stat'], warnings: [], checks: [], createdAt: 0, revision: 1, lineage: 'd1', ...over });
 
 beforeEach(() => {
+  conflict = false;
   posted.length = 0;
   rendered.length = 0;
   localStorage.clear();
@@ -116,7 +122,8 @@ describe('DraftCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Update saved dashboard/ }));
     await screen.findByText(/Open saved dashboard/);
     const save = posted.find((p) => p.url === '/api/dashboards/db')!;
-    expect(save.data).toMatchObject({ overwrite: true, dashboard: { uid: 'u1' } });
+    // Only if the dashboard is still at the version Augur saved (Grafana checks it).
+    expect(save.data).toMatchObject({ overwrite: false, dashboard: { uid: 'u1', version: 1 } });
     expect(onSaved).toHaveBeenLastCalledWith('Updated dashboard "Svc" (revision 2)', '/d/u1/svc');
     card.unmount();
 
@@ -126,7 +133,7 @@ describe('DraftCard', () => {
   });
 
   it('save as new keeps the earlier dashboard', async () => {
-    localStorage.setItem('augur-assistant-app/saved-drafts', JSON.stringify({ d1: { uid: 'old', url: '/d/old/svc', revision: 1, at: 1 } }));
+    localStorage.setItem('augur-assistant-app/saved-drafts', JSON.stringify({ d1: { uid: 'old', url: '/d/old/svc', revision: 1, version: 4, at: 1 } }));
     render(<DraftCard draft={draft({ id: 'd3', revision: 3, json: { ...json, uid: 'fresh' } }) as any} superseded={false} onSaved={jest.fn()} />);
     const actions = screen.getByTestId('claude-draft-card');
     fireEvent.click(within(actions).getByRole('button', { name: /^Save as new$/ }));
@@ -134,5 +141,24 @@ describe('DraftCard', () => {
     const save = posted.find((p) => p.url === '/api/dashboards/db')!;
     expect(save.data.overwrite).not.toBe(true);
     expect(save.data.dashboard.uid).toBe('fresh');
+  });
+
+  it('does not overwrite a dashboard someone changed since Augur saved it', async () => {
+    localStorage.setItem('augur-assistant-app/saved-drafts', JSON.stringify({ d1: { uid: 'old', url: '/d/old/svc', revision: 1, version: 4, at: 1 } }));
+    conflict = true;
+    const onSaved = jest.fn();
+    render(<DraftCard draft={draft({ id: 'd2', revision: 2 }) as any} superseded={false} onSaved={onSaved} />);
+    fireEvent.click(screen.getByRole('button', { name: /Update saved dashboard/ }));
+    expect(await screen.findByText(/was changed in Grafana since Augur saved it/)).toBeInTheDocument();
+    expect(posted.find((p) => p.url === '/api/dashboards/db')!.data).toMatchObject({ overwrite: false, dashboard: { uid: 'old', version: 4 } });
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /Save as new/ })).toBeInTheDocument();
+  });
+
+  it('dashboards saved before versions were recorded can only be saved as new', () => {
+    localStorage.setItem('augur-assistant-app/saved-drafts', JSON.stringify({ d1: { uid: 'old', url: '/d/old/svc', revision: 1, at: 1 } }));
+    render(<DraftCard draft={draft({ id: 'd2', revision: 2 }) as any} superseded={false} onSaved={jest.fn()} />);
+    expect(screen.queryByRole('button', { name: /Update saved dashboard/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Save as new dashboard/ })).toBeInTheDocument();
   });
 });

@@ -29,6 +29,9 @@ const (
 	mcpProtocolVersion = "2025-06-18"
 	mcpSessionTTL      = 10 * time.Minute
 	mcpToolsTTL        = 5 * time.Minute
+	// mcpCallToolsMaxAge bounds how stale the catalog used to authorize a call may be: a tool the
+	// server withdrew or redefined stops being callable within this time even if the UI's list is older.
+	mcpCallToolsMaxAge = time.Minute
 	mcpErrorTTL        = 30 * time.Second // failed discovery is cached briefly so a down server isn't hammered
 	mcpCallTimeout     = 120 * time.Second
 	mcpMaxBody         = 8 << 20
@@ -229,7 +232,7 @@ func matchResponse(raw []byte, wantID []byte) (*rpcResponse, error) {
 		}
 		for i := range batch {
 			if bytes.Equal(bytes.TrimSpace(batch[i].ID), wantID) {
-				return &batch[i], nil
+				return &batch[i], checkResponse(&batch[i], wantID)
 			}
 		}
 		return nil, errors.New("MCP response did not contain the request id")
@@ -238,7 +241,23 @@ func matchResponse(raw []byte, wantID []byte) (*rpcResponse, error) {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, fmt.Errorf("invalid MCP response: %w", err)
 	}
-	return &r, nil
+	return &r, checkResponse(&r, wantID)
+}
+
+// checkResponse validates a JSON-RPC response the same way for every transport (single JSON,
+// batch, SSE): version 2.0, the id of the request, and exactly one of result or error.
+func checkResponse(r *rpcResponse, wantID []byte) error {
+	if r.JSONRPC != "2.0" {
+		return fmt.Errorf("invalid MCP response: jsonrpc is %q, want \"2.0\"", r.JSONRPC)
+	}
+	if !bytes.Equal(bytes.TrimSpace(r.ID), wantID) {
+		return fmt.Errorf("invalid MCP response: id %s does not match request id %s", truncate(string(r.ID), 40), wantID)
+	}
+	hasResult := len(r.Result) > 0 && string(r.Result) != "null"
+	if hasResult == (r.Error != nil) {
+		return errors.New("invalid MCP response: must have exactly one of result or error")
+	}
+	return nil
 }
 
 // readSSEResponse scans server-sent events until the JSON-RPC response with wantID arrives.
@@ -260,13 +279,14 @@ func readSSEResponse(r io.Reader, wantID []byte, maxBody int64) (*rpcResponse, e
 		if bytes.Equal(bytes.TrimSpace(resp.ID), wantID) && (resp.Result != nil || resp.Error != nil) {
 			return &resp, true
 		}
+		// Anything else on the stream (notifications, server requests) is skipped.
 		return nil, false // notification or other message
 	}
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "" {
 			if r, ok := flush(); ok {
-				return r, nil
+				return r, checkResponse(r, wantID)
 			}
 			continue
 		}
@@ -278,7 +298,7 @@ func readSSEResponse(r io.Reader, wantID []byte, maxBody int64) (*rpcResponse, e
 		}
 	}
 	if r, ok := flush(); ok {
-		return r, nil
+		return r, checkResponse(r, wantID)
 	}
 	if err := sc.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
@@ -318,7 +338,7 @@ func (c *mcpClient) session(ctx context.Context, srv models.MCPServer, auth http
 			"params": map[string]any{
 				"protocolVersion": mcpProtocolVersion,
 				"capabilities":    map[string]any{},
-				"clientInfo":      map[string]any{"name": "augur-grafana", "version": "1.2.0"},
+				"clientInfo":      map[string]any{"name": "augur-grafana", "version": pluginVersion(ctx)},
 			},
 		}
 		resp, sid, err := c.post(sctx, srv, auth, "", init)
@@ -428,10 +448,24 @@ func withPolicy(srv models.MCPServer, tools []json.RawMessage) []json.RawMessage
 			continue
 		}
 		m["augurReadOnly"] = toolReadOnly(srv, t)
+		m["augurFingerprint"] = toolFingerprint(t)
 		b, _ := json.Marshal(m)
 		out = append(out, b)
 	}
 	return out
+}
+
+// toolFingerprint identifies a tool definition (name, description, schema, annotations) independent
+// of key order. A call carries the fingerprint the model and user saw; if the server has since
+// redefined the tool, the call is refused rather than run against a definition nobody reviewed.
+func toolFingerprint(raw json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return ""
+	}
+	canonical, _ := json.Marshal(v) // map keys are sorted
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:16])
 }
 
 func toolName(raw json.RawMessage) string {
@@ -458,12 +492,17 @@ func toolAllowed(srv models.MCPServer, name string) bool {
 // list was capped. Results are cached per identity (failures briefly), and concurrent requests for
 // the same identity share one discovery.
 func (c *mcpClient) listTools(ctx context.Context, srv models.MCPServer, auth http.Header) ([]json.RawMessage, string, error) {
+	return c.listToolsMaxAge(ctx, srv, auth, mcpToolsTTL)
+}
+
+// listToolsMaxAge is listTools with a tighter freshness bound (used to authorize calls).
+func (c *mcpClient) listToolsMaxAge(ctx context.Context, srv models.MCPServer, auth http.Header, maxAge time.Duration) ([]json.RawMessage, string, error) {
 	key := identityKey(srv.Name, auth)
-	if e := c.cachedTools(key); e != nil {
+	if e := c.cachedTools(key, maxAge); e != nil {
 		return e.tools, e.warning, e.err
 	}
 	v, _ := c.flight.do("tools:"+key, func() (any, error) {
-		if e := c.cachedTools(key); e != nil {
+		if e := c.cachedTools(key, maxAge); e != nil {
 			return e, nil
 		}
 		sctx, cancel := sharedContext(ctx)
@@ -480,15 +519,22 @@ func (c *mcpClient) listTools(ctx context.Context, srv models.MCPServer, auth ht
 	return e.tools, e.warning, e.err
 }
 
-func (c *mcpClient) cachedTools(key string) *toolsEntry {
+// invalidateTools drops the cached catalog for a server and identity.
+func (c *mcpClient) invalidateTools(srv models.MCPServer, auth http.Header) {
+	c.mu.Lock()
+	delete(c.tools, identityKey(srv.Name, auth))
+	c.mu.Unlock()
+}
+
+func (c *mcpClient) cachedTools(key string, maxAge time.Duration) *toolsEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e := c.tools[key]
 	if e == nil {
 		return nil
 	}
-	ttl := mcpToolsTTL
-	if e.err != nil {
+	ttl := maxAge
+	if e.err != nil && mcpErrorTTL < ttl {
 		ttl = mcpErrorTTL
 	}
 	if time.Since(e.at) > ttl {
@@ -638,6 +684,8 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		Server    string          `json:"server"`
 		Tool      string          `json:"tool"`
 		Arguments json.RawMessage `json:"arguments"`
+		// Fingerprint of the tool definition the caller saw (from /mcp/tools). Optional.
+		Fingerprint string `json:"fingerprint,omitempty"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBytes)).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -662,7 +710,7 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 	// The UI approval prompt protects against the model acting on injected instructions; this check
 	// protects against anyone calling the endpoint directly.
 	listCtx, cancelList := context.WithTimeout(r.Context(), 20*time.Second)
-	tools, _, lerr := d.mcp.listTools(listCtx, srv, auth)
+	tools, _, lerr := d.mcp.listToolsMaxAge(listCtx, srv, auth, mcpCallToolsMaxAge)
 	cancelList()
 	if lerr != nil {
 		writeError(w, http.StatusBadGateway, lerr.Error())
@@ -676,7 +724,14 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if tool == nil {
+		d.mcp.invalidateTools(srv, auth)
 		writeError(w, http.StatusForbidden, fmt.Sprintf("tool %q is not offered by MCP server %q", in.Tool, in.Server))
+		return
+	}
+	if in.Fingerprint != "" && in.Fingerprint != toolFingerprint(tool) {
+		d.mcp.invalidateTools(srv, auth)
+		d.logger.Warn("MCP tool definition changed", "server", srv.Name, "tool", in.Tool)
+		writeTypedError(w, http.StatusConflict, "tool_changed", fmt.Sprintf("tool %q on MCP server %q was redefined by the server since it was listed; the tool list has been reloaded, review it before calling again", in.Tool, in.Server))
 		return
 	}
 	readOnly := toolReadOnly(srv, tool)
@@ -703,4 +758,12 @@ func (d *Datasource) handleMCPCall(w http.ResponseWriter, r *http.Request) {
 	d.logger.Info("MCP tool call", "server", srv.Name, "tool", in.Tool, "readOnly", readOnly, "user", login)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(res)
+}
+
+// pluginVersion is this plugin's version as Grafana reports it (from plugin.json, set at release).
+func pluginVersion(ctx context.Context) string {
+	if v := backend.PluginConfigFromContext(ctx).PluginVersion; v != "" {
+		return v
+	}
+	return "dev"
 }

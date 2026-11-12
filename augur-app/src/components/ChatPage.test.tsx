@@ -470,6 +470,81 @@ describe('run lease across tabs', () => {
   });
 });
 
+test('a conversation whose run lock another tab holds is not run twice', async () => {
+  // Another tab of the same origin holds every run lock.
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (_n: string, _o: unknown, cb: (l: unknown) => unknown) => Promise.resolve(cb(null)) } });
+  try {
+    renderPage();
+    await ask('racing question');
+    expect(await screen.findByText(/running in another tab/i)).toBeInTheDocument();
+    expect(modelCalls()).toHaveLength(0);
+  } finally {
+    delete (navigator as any).locks;
+  }
+});
+
+describe('deleting a running conversation', () => {
+  const rail = () => within(screen.getByRole('complementary', { name: 'Conversations' }));
+  const row = (title: string) => rail().queryAllByTestId('augur-conversation').find((r) => r.textContent?.includes(title));
+  const storedIds = () => (JSON.parse(localStorage.getItem('augur-assistant-app/history') ?? '[]') as Array<{ id: string; title: string }>).map((x) => x.title);
+  const deleteRow = async (title: string) => {
+    await waitFor(() => expect(row(title)).toBeTruthy());
+    fireEvent.click(within(row(title)!).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(row(title)!).getByRole('button', { name: /Stop and delete|^Delete$/ }));
+  };
+  // Lets the aborted run unwind, its finally block run and any debounced save fire.
+  const settle = () => act(() => new Promise((r) => setTimeout(r, 450)));
+
+  test.each([
+    ['open', false],
+    ['in the background', true],
+  ])('while the model call is in flight (%s) it stays deleted', async (_label, background) => {
+    let release: (v: any) => void = () => undefined;
+    modelScript = [new Promise((r) => (release = r))];
+    renderPage();
+    await ask('secret incident');
+    await waitFor(() => expect(modelCalls()).toHaveLength(1));
+    if (background) {
+      fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    }
+    await deleteRow('secret incident');
+    await act(async () => release({ content: [{ type: 'text', text: 'late answer' }] }));
+    await settle();
+    expect(storedIds()).not.toContain('secret incident');
+    expect(row('secret incident')).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem('augur-assistant-app/deleted')!)).toHaveLength(1);
+  });
+
+  test('while an approval is pending it stays deleted, and the tool never runs', async () => {
+    modelScript = [{ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'm2', name: 'mcp__wiki__create_page', input: { title: 'x' } }] }];
+    renderPage();
+    await ask('needs approval');
+    await screen.findByTestId('augur-approval');
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+    await deleteRow('needs approval');
+    await settle();
+    expect(storedIds()).not.toContain('needs approval');
+    expect(posted.some((p) => p.url.endsWith('/mcp/call'))).toBe(false);
+  });
+
+  test('while sub-agents are running it stays deleted', async () => {
+    let releaseSub: (v: any) => void = () => undefined;
+    modelScript = [
+      { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'd1', name: 'delegate', input: { tasks: [{ name: 'logs', objective: 'find errors' }] } }] },
+      new Promise((r) => (releaseSub = r)),
+    ];
+    renderPage('/a/augur-assistant-app?mode=investigate');
+    await screen.findByText(/Describe the symptom to investigate/);
+    await ask('sub-agent incident', /Investigate$/);
+    await waitFor(() => expect(modelCalls()).toHaveLength(2));
+    await deleteRow('sub-agent incident');
+    await act(async () => releaseSub({ content: [{ type: 'text', text: 'brief' }] }));
+    await settle();
+    expect(storedIds()).not.toContain('sub-agent incident');
+    expect(modelCalls()).toHaveLength(2); // the lead agent did not continue
+  });
+});
+
 describe('multiple conversations', () => {
   const rail = () => within(screen.getByRole('complementary', { name: 'Conversations' }));
   const row = (title: string) => rail().getAllByTestId('augur-conversation').find((r) => r.textContent?.includes(title))!;

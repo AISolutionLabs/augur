@@ -10,29 +10,56 @@ export interface ApplyOptions {
   folderUid?: string;
   /** Recorded as the silence's creator. */
   login?: string;
-  /** Save a dashboard draft over this existing dashboard (unattended revisions of a saved draft). */
+  /** Save a dashboard draft over this existing dashboard (a later revision of a saved draft)... */
   replaceUid?: string;
+  /**
+   * ...but only if it is still at this version. If anyone saved it since, Grafana refuses and
+   * nothing is overwritten (the same optimistic check as edits to existing dashboards).
+   */
+  replaceVersion?: number;
 }
 
 export interface ApplyResult {
   message: string;
   url: string;
+  /** For dashboards: what was saved, so a later revision can update it safely. */
+  uid?: string;
+  version?: number;
+}
+
+/** Raised when a dashboard changed since Augur saved it. */
+export class DashboardChangedError extends Error {
+  constructor(title: string) {
+    super(`"${title}" was changed in Grafana since Augur saved it, so it was not overwritten. Save this revision as a new dashboard, or open the dashboard and ask Augur to edit it from its current state.`);
+    this.name = 'DashboardChangedError';
+  }
 }
 
 export async function applyProposal(http: GrafanaHttp, p: Proposal, opts: ApplyOptions = {}): Promise<ApplyResult> {
   switch (p.kind) {
     case 'dashboard': {
       if (opts.replaceUid) {
-        const r = await http.post<{ url: string }>('/api/dashboards/db', {
-          dashboard: { ...p.draft.json, id: null, uid: opts.replaceUid },
-          folderUid: opts.folderUid ?? p.draft.folderUid ?? '',
-          overwrite: true,
-          message: `Augur: revision ${p.draft.revision ?? ''}`.trim(),
-        });
-        return { message: `Updated dashboard "${p.draft.title}" (revision ${p.draft.revision ?? 2})`, url: r.url };
+        if (opts.replaceVersion === undefined) {
+          throw new Error('The version of the saved dashboard is unknown, so it cannot be updated safely. Save this revision as a new dashboard.');
+        }
+        let r: { url: string; uid: string; version: number };
+        try {
+          r = await http.post('/api/dashboards/db', {
+            dashboard: { ...p.draft.json, id: null, uid: opts.replaceUid, version: opts.replaceVersion },
+            folderUid: opts.folderUid ?? p.draft.folderUid ?? '',
+            overwrite: false,
+            message: `Augur: revision ${p.draft.revision ?? ''}`.trim(),
+          });
+        } catch (e) {
+          if ((e as { status?: number })?.status === 412) {
+            throw new DashboardChangedError(p.draft.title);
+          }
+          throw e;
+        }
+        return { message: `Updated dashboard "${p.draft.title}" (revision ${p.draft.revision ?? 2})`, url: r.url, uid: r.uid ?? opts.replaceUid, version: r.version };
       }
       const r = await saveDashboard(http, p.draft, opts.folderUid);
-      return { message: `Saved dashboard "${p.draft.title}"`, url: r.url };
+      return { message: `Saved dashboard "${p.draft.title}"`, url: r.url, uid: r.uid, version: r.version };
     }
     case 'dashboard_edit': {
       const r = await http.post<{ url: string }>('/api/dashboards/db', {

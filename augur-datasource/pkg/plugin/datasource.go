@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ type Datasource struct {
 	mcp      *mcpClient
 	models   modelCache
 	tlsErr   error // custom CA could not be loaded (reported by CheckHealth)
+	limiter  *usageLimiter
 	resource backend.CallResourceHandler
 	logger   log.Logger
 }
@@ -50,10 +52,10 @@ type Datasource struct {
 // NewDatasource creates a datasource instance for one configured datasource.
 func NewDatasource(ctx context.Context, instance backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	settings, err := models.LoadPluginSettings(instance)
-	ds := &Datasource{settings: settings, logger: log.DefaultLogger}
+	ds := &Datasource{settings: settings, logger: log.DefaultLogger, limiter: limiterFor(instance.UID)}
 	if err != nil {
 		// Keep the instance so CheckHealth can report the problem in the UI.
-		ds.logger.Warn("Claude datasource misconfigured", "error", err.Error())
+		ds.logger.Warn("Augur datasource misconfigured", "error", err.Error())
 	}
 
 	opts, optErr := instance.HTTPClientOptions(ctx)
@@ -117,7 +119,7 @@ func (d *Datasource) QueryData(_ context.Context, req *backend.QueryDataRequest)
 	resp := backend.NewQueryDataResponse()
 	for _, q := range req.Queries {
 		resp.Responses[q.RefID] = backend.ErrDataResponse(backend.StatusBadRequest,
-			"the Claude datasource is used by the Claude app; it cannot be queried from panels")
+			"the Augur model datasource is used by the Augur app; it cannot be queried from panels")
 	}
 	return resp, nil
 }
@@ -310,6 +312,19 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-user limits are enforced here, so they hold even for clients that bypass the app.
+	user := userKey(r.Context())
+	release, lerr := d.limiter.admit(user, d.settings.Limits, time.Now())
+	if lerr != nil {
+		d.logger.Info("Model call refused by limits", "user", user, "reason", lerr.kind)
+		if lerr.retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(lerr.retryAfter.Seconds()+0.999)))
+		}
+		writeTypedError(w, http.StatusTooManyRequests, lerr.kind, lerr.message)
+		return
+	}
+	defer release()
+
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(d.settings.TimeoutSeconds)*time.Second)
 	defer cancel()
 	req, err := d.newUpstreamRequest(ctx, http.MethodPost, d.settings.MessagesPath, bytes.NewReader(body), r.Header)
@@ -325,8 +340,8 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	resp, err := d.client.Do(req)
 	if err != nil {
-		d.logger.Warn("Claude upstream request failed", "error", err.Error())
-		writeError(w, http.StatusBadGateway, "could not reach the Claude endpoint: "+redact(err.Error()))
+		d.logger.Warn("Model upstream request failed", "error", err.Error())
+		writeError(w, http.StatusBadGateway, "could not reach the model endpoint: "+redact(err.Error()))
 		return
 	}
 	defer resp.Body.Close()
@@ -335,11 +350,14 @@ func (d *Datasource) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "error reading upstream response")
 		return
 	}
-	d.logger.Debug("Claude upstream call", "status", resp.StatusCode, "model", model, "duration", time.Since(start).String())
+	d.logger.Debug("Model upstream call", "status", resp.StatusCode, "model", model, "duration", time.Since(start).String())
 
 	status := resp.StatusCode
 	if d.settings.APIFormat == models.APIFormatOpenAI {
 		status, respBody = fromOpenAI(status, respBody)
+	}
+	if status < 300 {
+		d.limiter.record(user, effectiveTokens(respBody), time.Now())
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -440,12 +458,30 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 
 // writeError returns errors in the Anthropic error envelope so the UI has one format to parse.
 func writeError(w http.ResponseWriter, status int, msg string) {
+	writeTypedError(w, status, "grafana_plugin_error", msg)
+}
+
+// writeTypedError writes an error in the Messages API's error shape with a specific error type.
+func writeTypedError(w http.ResponseWriter, status int, errType, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"type":  "error",
-		"error": map[string]string{"type": "grafana_plugin_error", "message": msg},
+		"error": map[string]string{"type": errType, "message": msg},
 	})
+}
+
+// userKey identifies the Grafana user a request is for (limits are per user).
+func userKey(ctx context.Context) string {
+	if cfg := backend.PluginConfigFromContext(ctx); cfg.User != nil {
+		if cfg.User.Login != "" {
+			return cfg.User.Login
+		}
+		if cfg.User.Email != "" {
+			return cfg.User.Email
+		}
+	}
+	return "anonymous"
 }
 
 func truncate(s string, n int) string {

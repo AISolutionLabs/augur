@@ -1,5 +1,5 @@
 import React, { ChangeEvent } from 'react';
-import { Alert, Button, Field, FieldSet, InlineSwitch, Input, RadioButtonGroup, SecretInput, SecretTextArea, Switch, TagsInput, Stack } from '@grafana/ui';
+import { Alert, Button, Field, FieldSet, InlineSwitch, Input, RadioButtonGroup, SecretInput, SecretTextArea, Switch, TagsInput, Stack, Text } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 import { lastValueFrom } from 'rxjs';
@@ -206,6 +206,31 @@ export function ConfigEditor(props: Props) {
             onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ anthropicVersion: e.target.value || undefined })}
           />
         </Field>
+      </FieldSet>
+      <FieldSet label="Limits">
+        <Text color="secondary" variant="bodySmall">
+          Enforced by the Grafana backend for every caller, including scripts calling the API directly. Counters are per Grafana replica and
+          reset on restart; tokens are input + output + cache writes, with cache reads at 10%. Leave empty for no limit.
+        </Text>
+        {(
+          [
+            ['maxConcurrentPerUser', 'Concurrent calls per user', 'Default 16 (three conversations with sub-agents); -1 for no limit', '16'],
+            ['requestsPerMinutePerUser', 'Calls per minute per user', 'Rolling 60-second window', ''],
+            ['tokensPerUserPerDay', 'Tokens per user per day', 'Resets at 00:00 UTC, e.g. 2000000', ''],
+            ['tokensPerDay', 'Tokens per day (all users)', 'Resets at 00:00 UTC', ''],
+          ] as const
+        ).map(([key, label, description, placeholder]) => (
+          <Field key={key} label={label} description={description}>
+            <Input
+              type="number"
+              width={20}
+              aria-label={label}
+              value={jsonData.limits?.[key] ?? ''}
+              placeholder={placeholder}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setJson({ limits: { ...jsonData.limits, [key]: numberOrUndefined(e.target.value) } })}
+            />
+          </Field>
+        ))}
       </FieldSet>
     </Stack>
   );

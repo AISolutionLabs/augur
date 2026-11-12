@@ -20,7 +20,8 @@ import { Capabilities, loadCapabilities } from '../agent/capabilities';
 import { ClaudeDsConfig, datasourceModelCaller, getClaudeConfig, grafanaHttp, listClaudeDataSources, listDataSources } from '../api';
 import { STEP_BUDGET } from '../constants';
 import { AugurSettings, DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens, loadPersonalRules, loadSettings, Skill } from '../settings';
-import { Item, loadCurrent, loadHistory, newSession, patchStored, persist, SessionState, setCurrent, deleteSession } from './history';
+import { Item, loadCurrent, loadHistory, newSession, patchStored, persist, SessionState, setCurrent, deleteSession, isDeleted, setHistoryRetentionDays } from './history';
+import { acquireRunLock, RunLock } from './runLock';
 
 export const RANGE_MS: Record<string, number> = { '15m': 9e5, '1h': 36e5, '3h': 108e5, '6h': 216e5, '12h': 432e5, '24h': 864e5, '2d': 1728e5, '7d': 6048e5 };
 
@@ -68,6 +69,8 @@ interface RunCtx {
   hypotheses: Hypothesis[];
   status: string;
   usage: Required<Usage>;
+  /** Cross-tab run lock, held for the whole run. */
+  lock?: RunLock;
 }
 
 /** Expands "/skill-name args" into the skill's instructions. */
@@ -363,7 +366,10 @@ class AugurStore {
     const claudeDs = listClaudeDataSources();
     const dsUid = claudeDs.find((d) => d.isDefault)?.uid ?? claudeDs[0]?.uid;
     this.set({ claudeDs, dsUid, ready: true });
-    loadSettings(grafanaHttp).then((settings) => this.set({ settings }));
+    loadSettings(grafanaHttp).then((settings) => {
+      setHistoryRetentionDays(settings.historyRetentionDays);
+      this.set({ settings, history: loadHistory() });
+    });
     if (dsUid) {
       this.loadDatasource(dsUid);
     }
@@ -396,17 +402,15 @@ class AugurStore {
     this.watcher = setInterval(refresh, LEASE_HEARTBEAT_MS);
   }
 
-  /** Takes the cross-tab lease for a conversation's run; false if another live tab holds it. */
-  private acquireLease(sessionId: string): boolean {
-    if (liveLeaseElsewhere(sessionId, this.tabId)) {
-      return false;
-    }
-    this.writeLease(sessionId);
+  /**
+   * Keeps this tab's leases fresh. Leases tell other tabs a conversation is running here (and let
+   * them take over if this tab goes away); exclusive ownership comes from the run lock.
+   */
+  private ensureHeartbeat() {
     if (!this.heartbeat) {
       // One heartbeat refreshes every lease this tab holds.
       this.heartbeat = setInterval(() => this.runs.forEach((_, id) => this.writeLease(id)), LEASE_HEARTBEAT_MS);
     }
-    return true;
   }
 
   private writeLease(sessionId: string) {
@@ -452,23 +456,46 @@ class AugurStore {
     }
   };
 
+  /** Bumped on every datasource switch: responses for an earlier selection are discarded. */
+  private dsLoadSeq = 0;
+
   private loadDatasource(uid: string) {
+    const seq = ++this.dsLoadSeq;
+    const current = () => seq === this.dsLoadSeq && this.state.dsUid === uid;
+    // Until the new datasource's config arrives, nothing from the previous one may be used.
+    this.set({ dsConfig: undefined, mcp: { servers: [] } });
     getClaudeConfig(uid)
       .then((c) => {
+        if (!current()) {
+          return;
+        }
         this.set({ configError: undefined, dsConfig: c, model: c.defaultModel });
         if (c.mcpServers?.length) {
-          loadMcpCatalog(grafanaHttp, uid).then((mcp) => this.set({ mcp }));
-        } else {
-          this.set({ mcp: { servers: [] } });
+          this.reloadMcp(uid, current);
         }
       })
-      .catch((e) => this.set({ configError: e?.data?.error?.message ?? e?.data?.message ?? e?.message ?? 'Could not load Claude datasource config' }));
+      .catch((e) => {
+        if (current()) {
+          this.set({ configError: e?.data?.error?.message ?? e?.data?.message ?? e?.message ?? 'Could not load the model datasource configuration' });
+        }
+      });
+  }
+
+  private reloadMcp(uid: string, current: () => boolean = () => this.state.dsUid === uid) {
+    loadMcpCatalog(grafanaHttp, uid).then((mcp) => {
+      if (current()) {
+        this.set({ mcp });
+      }
+    });
   }
 
   setModel = (model?: string) => this.set({ model });
   setMode = (mode: AgentMode) => (this.updateSession((s) => ({ ...s, mode })), this.notifyNow());
   setRangeKey = (rangeKey: string) => (this.updateSession((s) => ({ ...s, rangeKey })), this.notifyNow());
-  setSettings = (settings: AugurSettings) => this.set({ settings });
+  setSettings = (settings: AugurSettings) => {
+    setHistoryRetentionDays(settings.historyRetentionDays);
+    this.set({ settings, history: loadHistory() });
+  };
 
   // ---- agent events ------------------------------------------------------------
 
@@ -553,10 +580,14 @@ class AugurStore {
       this.pendingNotes.delete(id);
     }
     const transcript: Message[] = [...this.continuationOf(this.state.session), { role: 'user', content: [{ type: 'text', text: userText }] }];
+    const startedAt = Date.now();
+    const rangeMs = RANGE_MS[this.state.session.rangeKey] ?? 36e5;
     this.updateSession(
       (s) => ({
         ...s,
         mode,
+        // Each investigation records its own question and window (a conversation can hold several).
+        investigation: mode === 'investigate' ? { question: text, startedAt, range: { from: startedAt - rangeMs, to: startedAt } } : s.investigation,
         title: s.items.length ? s.title : text.slice(0, 80),
         items: [...s.items, { kind: 'user', text, mode }],
         messages: transcript,
@@ -630,7 +661,7 @@ class AugurStore {
     if (!dsUid || !start) {
       return;
     }
-    if (!this.acquireLease(id)) {
+    if (liveLeaseElsewhere(id, this.tabId)) {
       this.set({ runningElsewhere: true });
       this.watchOtherTab();
       return;
@@ -645,7 +676,27 @@ class AugurStore {
       status: '',
       usage: start.usage ?? ZERO_USAGE,
     };
+    // Registered before the lock is awaited so a second send in this tab is refused straight away.
     this.runs.set(id, run);
+    const lock = await acquireRunLock(id, this.tabId);
+    if (!lock) {
+      // Another tab took this conversation's run lock: follow it instead of running twice.
+      this.runs.delete(id);
+      this.set({ runningElsewhere: true });
+      this.watchOtherTab();
+      return;
+    }
+    run.lock = lock;
+    this.writeLease(id);
+    this.ensureHeartbeat();
+    if (ac.signal.aborted || isDeleted(id)) {
+      // Stopped or deleted while waiting for the lock.
+      lock.release();
+      this.runs.delete(id);
+      this.releaseLease(id);
+      this.publishRuns();
+      return;
+    }
     this.setNow({ running: true, usage: run.usage });
     this.updateSessionById(id, (s) => ({ ...s, run: { status: 'running', mode, startedAt: Date.now() } }), true);
     this.publishRuns();
@@ -654,7 +705,9 @@ class AugurStore {
     // Installed apps and panels (cached; never holds up a run for long).
     const capabilities = await Promise.race([this.getCapabilities(), new Promise<undefined>((r) => setTimeout(() => r(undefined), 3000))]);
     const now = Date.now();
-    const range = { from: now - (RANGE_MS[run.session.rangeKey] ?? 36e5), to: now };
+    const inv = run.session.investigation;
+    // A new investigation queries exactly the window recorded for its report; a resumed run uses now.
+    const range = mode === 'investigate' && inv && !inv.completedAt && now - inv.startedAt < 60_000 ? inv.range : { from: now - (RANGE_MS[run.session.rangeKey] ?? 36e5), to: now };
     const datasources = listDataSources();
     const user = config.bootData?.user;
     const call = datasourceModelCaller(dsUid, (attempt, reason) => onEvent({ kind: 'status', text: `Gateway unavailable (${reason}); retrying (${attempt}/4)…` }));
@@ -682,7 +735,7 @@ class AugurStore {
       propose,
       skills,
       memory: settings.memory,
-      mcp: mcpTools(mcp, dsUid),
+      mcp: mcpTools(mcp, dsUid, () => this.reloadMcp(dsUid)),
       capabilities: this.getCapabilities,
       delegate: subAgents ? { call, model, maxTokens: dsConfig?.maxTokens, baseSystem: buildSystemPrompt({ ...promptBase, mode: 'chat' }), onEvent } : undefined,
     });
@@ -743,9 +796,14 @@ class AugurStore {
         },
       });
       completed = true;
-      this.updateSessionById(id, (s) => ({ ...s, messages }));
+      this.updateSessionById(id, (s) => ({
+        ...s,
+        messages,
+        investigation: mode === 'investigate' && s.investigation ? { ...s.investigation, completedAt: Date.now() } : s.investigation,
+      }));
     } finally {
       this.runs.delete(id);
+      run.lock?.release();
       this.releaseLease(id);
       for (const approvalId of run.approvals.keys()) {
         this.approvalOwner.delete(approvalId);
@@ -852,9 +910,13 @@ class AugurStore {
     this.watchOtherTab();
   };
 
+  /** Deletes a conversation, stopping its run first. It is tombstoned, so nothing can save it again. */
   remove = (id: string) => {
-    this.runs.get(id)?.abort.abort();
     deleteSession(id);
+    clearTimeout(this.persistTimers.get(id));
+    this.persistTimers.delete(id);
+    this.pendingNotes.delete(id);
+    this.runs.get(id)?.abort.abort();
     if (id === this.state.session.id) {
       this.reset();
       return;
@@ -891,20 +953,18 @@ class AugurStore {
 
   saveInvestigation = async (folderUid?: string) => {
     const s = this.state.session;
-    const finalAnswer = [...s.items].reverse().find((x) => x.kind === 'assistant') as { text: string } | undefined;
-    const firstQuestion = s.items.find((x) => x.kind === 'user') as { text: string } | undefined;
-    const now = Date.now();
+    const meta = investigationReportMeta(s);
     const r = await saveInvestigationApi(
       grafanaHttp,
       {
-        title: `Investigation: ${firstQuestion?.text ?? s.title}`,
-        question: firstQuestion?.text ?? s.title,
-        report: finalAnswer?.text ?? '',
+        title: meta.title,
+        question: meta.question,
+        report: meta.finalAnswer,
         findings: s.findings,
         hypotheses: s.hypotheses,
         evidence: s.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ tool: x.name, input: x.input as any, ok: x.status === 'ok' })),
         ledger: s.evidence ?? [],
-        range: { from: s.createdAt - (RANGE_MS[s.rangeKey] ?? 36e5), to: now },
+        range: meta.range,
         user: config.bootData?.user?.login,
       },
       listDataSources(),
@@ -912,6 +972,38 @@ class AugurStore {
     );
     this.updateSession((x) => ({ ...x, savedUrl: r.url }), true);
     return r;
+  };
+}
+
+/**
+ * What a report says about an investigation: the question that started it (not just the first
+ * message of the conversation) and the window it covered. The window is the one the agent was given,
+ * widened to every query in the evidence ledger, so it never claims less than was examined.
+ */
+export function investigationReportMeta(s: SessionState, now = Date.now()) {
+  const inv = s.investigation;
+  const lastQuestion = [...s.items].reverse().find((x) => x.kind === 'user' && x.mode === 'investigate') as { text: string } | undefined;
+  const firstQuestion = s.items.find((x) => x.kind === 'user') as { text: string } | undefined;
+  const question = inv?.question ?? lastQuestion?.text ?? firstQuestion?.text ?? s.title;
+  const finalAnswer = ([...s.items].reverse().find((x) => x.kind === 'assistant') as { text: string } | undefined)?.text ?? '';
+  let { from, to } = inv?.range ?? { from: (s.run?.startedAt ?? s.updatedAt) - (RANGE_MS[s.rangeKey] ?? 36e5), to: s.run?.startedAt ?? s.updatedAt };
+  for (const e of s.evidence ?? []) {
+    const f = Date.parse(e.from);
+    const t = Date.parse(e.to);
+    if (Number.isFinite(f)) {
+      from = Math.min(from, f);
+    }
+    if (Number.isFinite(t)) {
+      to = Math.max(to, t);
+    }
+  }
+  return {
+    title: `Investigation: ${question}`.slice(0, 120),
+    question,
+    finalAnswer,
+    range: { from, to: Math.min(to, now) },
+    startedAt: inv?.startedAt,
+    completedAt: inv?.completedAt,
   };
 }
 

@@ -74,6 +74,9 @@ export function DraftPreview({ json }: { json: Record<string, any> }) {
 
   return (
     <div ref={ref} className={s.wrap} data-testid="augur-draft-preview">
+      <div className={s.muted} title="A specific variable selection, a longer time range or more data can behave differently.">
+        Validation sample: last hour, variables set to all values. Not a guarantee of every selection or time range.
+      </div>
       {measured && (
         <div className={s.grid} style={{ height: model.height * UNIT }}>
           {model.cells.map((c, idx) => {
@@ -127,7 +130,7 @@ export function DraftPreview({ json }: { json: Record<string, any> }) {
 
 const getStyles = (t: GrafanaTheme2) => ({
   wrap: css({ width: '100%' }),
-  grid: css({ position: 'relative', width: '100%' }),
+  grid: css({ position: 'relative', width: '100%', marginTop: t.spacing(0.5) }),
   cell: css({
     position: 'absolute',
     background: t.colors.background.primary,

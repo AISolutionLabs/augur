@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.7.0
+
+A reliability release, following an independent review of 1.6.0.
+
+- **Deleted conversations stay deleted.** Deleting a conversation that was running (model call in flight, approval pending, sub-agents working) could write it back when the run unwound. Deletions are now tombstoned, so no late save, debounced checkpoint or other tab can restore them.
+- **One tab per run, atomically.** Run ownership uses the Web Locks API (released automatically if a tab crashes), with a write-then-verify localStorage fallback. Two tabs starting the same conversation at the same instant can no longer both run it.
+- **Every continuation is bounded.** Each model response counts toward the step limit, including `pause_turn`; at most three pauses in a row, the token budget is checked after pauses, and a hard cap stops any loop.
+- **Backend limits are respected.** A spent daily budget from the datasource is shown at once instead of retried; rate and concurrency limits are retried with backoff.
+- **Investigation reports use the right question and window.** Each investigation records its question, start time and the window the agent was given; Save to Grafana, Markdown and PDF use them (widened to cover every query in the evidence ledger) instead of the conversation's first message and creation time.
+- **Dashboard revisions don't overwrite other people's changes.** *Update saved dashboard* (and headless revisions) now send the version Augur saved; if the dashboard changed in Grafana since, nothing is overwritten and you're offered *Save as new*. Dashboards saved by 1.6 (no recorded version) can only be saved as new.
+- **Switching datasources is race-free.** A slow configuration or MCP catalog response for a previously selected datasource is discarded instead of overwriting the current one.
+- **MCP:** calls send the tool's fingerprint; a tool the server redefined since it was listed is refused and the list reloads.
+- **Prompt injection:** sub-agent briefs reach the lead agent framed as evidence to verify, never as instructions; the system prompt names trace attributes, dashboard descriptions, runbooks, MCP tool descriptions and briefs as untrusted.
+- **History retention.** New org setting *Keep conversations for (days)*: older unpinned conversations are deleted from users' browsers.
+- The dashboard preview is labelled as a validation sample (last hour, variables set to all values).
+- Provider-neutral wording: "Created with Augur", "model datasource", no "powered by Claude" in the prompt.
+- GitHub Actions are pinned to commit SHAs, with Dependabot keeping them current.
+
 ## 1.6.0
 
 - **Multiple conversations.** A conversations rail (page) and list (sidebar) with search, rename, pin and delete, grouped by Running, Pinned, Today, Yesterday, Previous 7 days and Older. Switching conversations no longer stops a run: up to three conversations run in parallel in the background, each with its own cross-tab lease; runs waiting for approval or interrupted are marked. Stop affects only the open conversation. History keeps 60 conversations and compacts older transcripts (then long tool outputs) before evicting any.

@@ -6,7 +6,7 @@ Ask for a dashboard in plain language. Augur designs it, dry-runs every query, a
 
 ## The draft card
 
-- **Preview:** the dashboard rendered with real Grafana panels and the last hour of data, with dashboard variables set to all values. Toggle **Outline** for a text summary. Collapsed rows show as headers; drafts larger than 20 panels preview the first 20.
+- **Preview:** the dashboard rendered with real Grafana panels and the last hour of data, with dashboard variables set to all values. Toggle **Outline** for a text summary. Collapsed rows show as headers; drafts larger than 20 panels preview the first 20. The preview is a **validation sample**: a specific variable value, a longer time range or more data can behave differently, so check the saved dashboard too.
 - **Revision number:** each change you ask for makes a new revision. Older drafts are marked superseded.
 - **Query check:** how many queries returned data, and which were empty or failed.
 - **Automatic fixes:** what Augur corrected for you (see below).
@@ -23,7 +23,7 @@ Ask for changes in the conversation:
 
 Augur calls `revise_draft`, which changes only the panels you mention and leaves the rest as they were.
 
-If you saved an earlier revision, the card offers **Update saved dashboard**, which overwrites the one you saved, or **Save as new**, which keeps both. Dashboard versions in Grafana keep every save restorable.
+If you saved an earlier revision, the card offers **Update saved dashboard**, which replaces the one you saved, or **Save as new**, which keeps both. The update uses Grafana's version check: if anyone changed the dashboard in Grafana since Augur saved it, nothing is overwritten, and you can save the revision as new instead. Dashboard versions in Grafana keep every save restorable.
 
 ## What the builder produces
 
