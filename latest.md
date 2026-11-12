@@ -1,5 +1,5 @@
-# E2E a93062a (2026-11-12T00:23:53Z)
-run: https://github.com/AniAIApps/augur/actions/runs/43125162522
+# E2E 6fc6e01 (2026-11-12T05:31:41Z)
+run: https://github.com/AniAIApps/augur/actions/runs/43160234099
 e2e: success
 loop-control: success
 
@@ -10,12 +10,12 @@ loop-control: success
 ✓ list_datasources (0ms, 161 chars)
 → query_loki {"datasource_uid":"loki","expr":"{service=\"payment-service\"} |= \"error\"","limit":20}
 → search_traces {"datasource_uid":"tempo","traceql":"{ status = error }","limit":5}
-✓ query_prometheus (54ms, 1365 chars)
-✓ query_loki (57ms, 985 chars)
-✓ query_loki (64ms, 933 chars)
-✓ search_traces (65ms, 702 chars)
-✓ draft_dashboard (30ms, 595 chars)
-✓ headless run exits 0 (got 0, 0.3s)
+✓ query_prometheus (30ms, 1365 chars)
+✓ query_loki (34ms, 985 chars)
+✓ query_loki (34ms, 933 chars)
+✓ search_traces (39ms, 702 chars)
+✓ draft_dashboard (41ms, 595 chars)
+✓ headless run exits 0 (got 0, 0.2s)
 ✓ model requests well-formed
 ✓ run reached the final answer
 ✓ tool calls recorded in ATIF trajectory (6)
@@ -31,7 +31,7 @@ loop-control: success
 ✓ Loki metric query returned level series
 ✓ Loki log query returned error lines
 ✓ Tempo search returned trace ids
-✓ dashboard proposal applied ([{"kind":"dashboard","message":"Saved dashboard \"Augur e2e: service overview\"","url":"/d/cl-4gs1qtni5e0/augur-e2e3a-service-overview"}])
+✓ dashboard proposal applied ([{"kind":"dashboard","message":"Saved dashboard \"Augur e2e: service overview\"","url":"/d/cl-byl40qaupt7/augur-e2e3a-service-overview"}])
 ✓ evidence ledger has ≥3 entries (6)
 ✓ dashboard exists in Grafana
 ✓ dashboard panels have datasources and targets
@@ -40,12 +40,12 @@ All checks passed
 ✓ list_datasources (0ms, 161 chars)
 → query_loki {"datasource_uid":"loki","expr":"{service=\"payment-service\"} |= \"error\"","limit":20}
 → search_traces {"datasource_uid":"tempo","traceql":"{ status = error }","limit":5}
-✓ query_prometheus (27ms, 1365 chars)
-✓ search_traces (28ms, 702 chars)
-✓ query_loki (44ms, 933 chars)
-✓ query_loki (47ms, 985 chars)
-✓ draft_dashboard (42ms, 595 chars)
-✓ headless run exits 0 (got 0, 0.3s)
+✓ query_prometheus (21ms, 1365 chars)
+✓ query_loki (23ms, 985 chars)
+✓ query_loki (27ms, 933 chars)
+✓ search_traces (26ms, 702 chars)
+✓ draft_dashboard (20ms, 595 chars)
+✓ headless run exits 0 (got 0, 0.2s)
 ✓ model requests well-formed
 ✓ run reached the final answer
 ✓ tool calls recorded in ATIF trajectory (6)
@@ -61,7 +61,7 @@ All checks passed
 ✓ Loki metric query returned level series
 ✓ Loki log query returned error lines
 ✓ Tempo search returned trace ids
-✓ dashboard proposal applied ([{"kind":"dashboard","message":"Saved dashboard \"Augur e2e: service overview\"","url":"/d/cl-c2dh7a3l5c3/augur-e2e3a-service-overview"}])
+✓ dashboard proposal applied ([{"kind":"dashboard","message":"Saved dashboard \"Augur e2e: service overview\"","url":"/d/cl-9zt6a6ixsat/augur-e2e3a-service-overview"}])
 ✓ evidence ledger has ≥3 entries (6)
 ✓ dashboard exists in Grafana
 ✓ dashboard panels have datasources and targets
@@ -72,7 +72,7 @@ All checks passed
 ✓ [run 1/5] model requests from the browser were well-formed
 ✓ [run 1/5] no tool or gateway errors shown
 ✓ [run 1/5] dashboard draft card shown (not applied without a click)
-✓ [run 1/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":1})
+✓ [run 1/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":0})
 ✓ [run 1/5] draft preview panels render without errors
 ✓ [run 1/5] no page errors
 ✓ [run 2/5] Augur app page renders with the composer
@@ -80,7 +80,7 @@ All checks passed
 ✓ [run 2/5] model requests from the browser were well-formed
 ✓ [run 2/5] no tool or gateway errors shown
 ✓ [run 2/5] dashboard draft card shown (not applied without a click)
-✓ [run 2/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":1})
+✓ [run 2/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":0})
 ✓ [run 2/5] draft preview panels render without errors
 ✓ [run 2/5] no page errors
 ✓ [run 3/5] Augur app page renders with the composer
@@ -88,7 +88,7 @@ All checks passed
 ✓ [run 3/5] model requests from the browser were well-formed
 ✓ [run 3/5] no tool or gateway errors shown
 ✓ [run 3/5] dashboard draft card shown (not applied without a click)
-✓ [run 3/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":1})
+✓ [run 3/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":0})
 ✓ [run 3/5] draft preview panels render without errors
 ✓ [run 3/5] no page errors
 ✓ [run 4/5] Augur app page renders with the composer
@@ -96,7 +96,7 @@ All checks passed
 ✓ [run 4/5] model requests from the browser were well-formed
 ✓ [run 4/5] no tool or gateway errors shown
 ✓ [run 4/5] dashboard draft card shown (not applied without a click)
-✓ [run 4/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":0})
+✓ [run 4/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":1})
 ✓ [run 4/5] draft preview panels render without errors
 ✓ [run 4/5] no page errors
 ✓ [run 5/5] Augur app page renders with the composer
@@ -104,7 +104,7 @@ All checks passed
 ✓ [run 5/5] model requests from the browser were well-formed
 ✓ [run 5/5] no tool or gateway errors shown
 ✓ [run 5/5] dashboard draft card shown (not applied without a click)
-✓ [run 5/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":1})
+✓ [run 5/5] draft preview renders both panels ({"cells":2,"alerts":0,"canvases":0})
 ✓ [run 5/5] draft preview panels render without errors
 ✓ [run 5/5] no page errors
 All UI checks passed (5 runs)
