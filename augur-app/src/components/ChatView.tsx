@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { css, cx } from '@emotion/css';
 import { GrafanaTheme2, SelectableValue } from '@grafana/data';
 import { config } from '@grafana/runtime';
@@ -44,7 +44,12 @@ const RANGES: Array<ComboboxOption<string>> = [
 
 const MODES: Array<SelectableValue<AgentMode>> = [
   { label: 'Chat', value: 'chat', icon: 'comment-alt', description: 'Questions, queries, dashboards and alerting' },
-  { label: 'Investigate', value: 'investigate', icon: 'search', description: 'Deep root-cause analysis across all signals' },
+  {
+    label: 'Investigate',
+    value: 'investigate',
+    icon: 'search',
+    description: 'Deep root-cause analysis across all signals',
+  },
 ];
 
 const STARTERS: Record<AgentMode, string[]> = {
@@ -61,7 +66,11 @@ const STARTERS: Record<AgentMode, string[]> = {
   ],
 };
 
-const SIDEBAR_STARTERS = ['What is going on on this page?', 'Is anything unusual here in the last hour?', 'Explain this dashboard'];
+const SIDEBAR_STARTERS = [
+  'What is going on on this page?',
+  'Is anything unusual here in the last hour?',
+  'Explain this dashboard',
+];
 
 export interface ChatViewProps {
   s: AugurSession;
@@ -94,20 +103,63 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const runningCount = Object.keys(s.runs).filter((id) => id !== session.id).length;
   const mode = session.mode;
 
-  // Follow the conversation only while the user is at the bottom, and jump instead of animating:
-  // a smooth scroll moves Grafana's page container every frame, and Grafana's chrome re-renders on
-  // each of those frames (seen as React error #185 from the breadcrumb/nav in Grafana 13).
-  useEffect(() => {
-    const el = bottomRef.current;
-    const scroller = el ? scrollParent(el) : null;
-    if (!el || !scroller) {
-      return;
+  // The transcript scrolls inside its own pane (the composer stays put). It follows new output only
+  // while the user is at the bottom, and jumps rather than animating. Scrolling never moves Grafana's
+  // page container, whose chrome re-renders on every scroll frame (React error #185 in Grafana 13).
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  // Whether the reader was at the end as of their last scroll. Decided before new output renders,
+  // so a long new message doesn't count as the reader having scrolled away.
+  const followRef = useRef(true);
+  const toBottom = useCallback(() => {
+    const el = timelineRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
     }
-    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    if (distance < 400) {
-      scroller.scrollTop = scroller.scrollHeight;
+    followRef.current = true;
+    setAwayFromBottom(false);
+  }, []);
+  const onTimelineScroll = useCallback(() => {
+    const el = timelineRef.current;
+    if (el) {
+      const away = el.scrollHeight - el.scrollTop - el.clientHeight > SCROLL_FOLLOW_PX;
+      followRef.current = !away;
+      // Only re-render when crossing the threshold, not on every scroll event.
+      setAwayFromBottom((was) => (was === away ? was : away));
+    }
+  }, []);
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (el && followRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [session.items.length, s.status]);
+  // Opening another conversation starts at its latest message.
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (el) {
+      followRef.current = true;
+      el.scrollTop = el.scrollHeight; // the scroll event updates "Jump to latest"
+    }
+  }, [session.id]);
+
+  // On the page, the view fills the window below Grafana's header so the transcript, the rail and
+  // the hypotheses panel each scroll on their own. Measured, because the chrome above varies.
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [pageHeight, setPageHeight] = useState<number | undefined>();
+  useLayoutEffect(() => {
+    if (variant !== 'page') {
+      return;
+    }
+    const measure = () => {
+      const top = layoutRef.current?.getBoundingClientRect().top ?? 0;
+      const h = Math.max(MIN_PAGE_HEIGHT, Math.round(window.innerHeight - Math.max(0, top) - PAGE_BOTTOM_GAP));
+      setPageHeight((was) => (was === h ? was : h));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [variant]);
 
   const started = useRef(false);
   useEffect(() => {
@@ -124,7 +176,11 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
   const skills = useMemo(() => (s.settings.skills ?? []).filter((x) => x.enabled), [s.settings.skills]);
 
   const latestDraft = useMemo(
-    () => [...session.items].reverse().find((x) => x.kind === 'proposal' && session.proposals[x.id]?.kind === 'dashboard') as { id: string } | undefined,
+    () =>
+      [...session.items]
+        .reverse()
+        .find((x) => x.kind === 'proposal' && session.proposals[x.id]?.kind === 'dashboard') as
+        { id: string } | undefined,
     [session.items, session.proposals]
   )?.id;
   const toolCount = session.items.filter((x) => x.kind === 'tool').length;
@@ -150,7 +206,9 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
       finalAnswer: meta.finalAnswer,
       findings: session.findings,
       hypotheses: session.hypotheses,
-      queries: session.items.filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool').map((x) => ({ label: x.label, ok: x.status === 'ok' })),
+      queries: session.items
+        .filter((x): x is Extract<Item, { kind: 'tool' }> => x.kind === 'tool')
+        .map((x) => ({ label: x.label, ok: x.status === 'ok' })),
       ledger: session.evidence,
       user: config.bootData?.user?.login,
       generatedAt: Date.now(),
@@ -179,20 +237,42 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
 
   const toolbar = (
     <Stack gap={1} alignItems="center" wrap="wrap">
-      <RadioButtonGroup size={variant === 'sidebar' ? 'sm' : 'md'} options={MODES} value={mode} onChange={s.setMode} disabled={s.running} />
+      <RadioButtonGroup
+        size={variant === 'sidebar' ? 'sm' : 'md'}
+        options={MODES}
+        value={mode}
+        onChange={s.setMode}
+        disabled={s.running}
+      />
       {s.claudeDs.length > 1 && (
-        <Combobox width={22} options={s.claudeDs.map((d) => ({ label: d.name, value: d.uid }))} value={s.dsUid} onChange={(v) => s.setDsUid(v.value)} aria-label="Claude datasource" />
+        <Combobox
+          width={22}
+          options={s.claudeDs.map((d) => ({ label: d.name, value: d.uid }))}
+          value={s.dsUid}
+          onChange={(v) => s.setDsUid(v.value)}
+          aria-label="Claude datasource"
+        />
       )}
       {s.dsConfig && s.dsConfig.models.length > 1 && variant === 'page' && (
         <Combobox
           width={28}
-          options={s.dsConfig.models.map((m) => ({ label: s.dsConfig?.modelNames?.[m] ?? m, value: m, description: s.dsConfig?.modelNames?.[m] ? m : undefined }))}
+          options={s.dsConfig.models.map((m) => ({
+            label: s.dsConfig?.modelNames?.[m] ?? m,
+            value: m,
+            description: s.dsConfig?.modelNames?.[m] ? m : undefined,
+          }))}
           value={s.model}
           onChange={(v) => s.setModel(v.value)}
           aria-label="Model"
         />
       )}
-      <Combobox width={variant === 'sidebar' ? 16 : 18} options={RANGES} value={session.rangeKey} onChange={(v) => s.setRangeKey(v.value)} aria-label="Time range" />
+      <Combobox
+        width={variant === 'sidebar' ? 16 : 18}
+        options={RANGES}
+        value={session.rangeKey}
+        onChange={(v) => s.setRangeKey(v.value)}
+        aria-label="Time range"
+      />
       <IconButton
         name="history"
         tooltip={runningCount ? `Conversations (${runningCount} running)` : 'Conversations'}
@@ -207,18 +287,29 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
         tooltip="My preferences"
         aria-label="My preferences"
         onClick={() => {
-          setPrefs(loadPersonalRules().map((r) => r.text).join('\n'));
+          setPrefs(
+            loadPersonalRules()
+              .map((r) => r.text)
+              .join('\n')
+          );
           setPrefsOpen(true);
         }}
       />
       {variant === 'sidebar' && isInvestigation && (
-        <IconButton name="list-ul" tooltip="Hypotheses & findings" aria-label="Hypotheses and findings" onClick={() => setShowPanel(!showPanel)} />
+        <IconButton
+          name="list-ul"
+          tooltip="Hypotheses & findings"
+          aria-label="Hypotheses and findings"
+          onClick={() => setShowPanel(!showPanel)}
+        />
       )}
     </Stack>
   );
 
   return (
     <div
+      ref={layoutRef}
+      style={variant === 'page' && pageHeight ? { height: pageHeight } : undefined}
       className={cx(
         st.layout,
         variant === 'page' && railOpen && (isInvestigation ? st.withRailAndSidebar : st.withRail),
@@ -247,24 +338,22 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
           .filter((m) => m.error || m.warning)
           .map((m) => (
             <div key={m.name} className={st.notice} data-testid="augur-mcp-notice">
-              <Icon name={m.error ? 'exclamation-triangle' : 'info-circle'} /> MCP server <b>{m.name}</b>: {m.error ?? m.warning}
+              <Icon name={m.error ? 'exclamation-triangle' : 'info-circle'} /> MCP server <b>{m.name}</b>:{' '}
+              {m.error ?? m.warning}
             </div>
           ))}
         {s.runningElsewhere && (
           <Alert severity="info" title="Running in another tab" data-testid="augur-elsewhere">
-            This conversation is being worked on in another browser tab. Progress appears here as it is saved; you can continue once it finishes.
+            This conversation is being worked on in another browser tab. Progress appears here as it is saved; you can
+            continue once it finishes.
           </Alert>
         )}
         {s.interrupted && (
-          <Alert
-            severity="warning"
-            title="This run was interrupted"
-            data-testid="augur-interrupted"
-          >
+          <Alert severity="warning" title="This run was interrupted" data-testid="augur-interrupted">
             <Stack gap={1} alignItems="center" wrap="wrap">
               <span>
-                The page was reloaded or closed while Augur was working (started {new Date(s.interrupted.startedAt).toLocaleTimeString()}). Everything up to the last
-                step is saved.
+                The page was reloaded or closed while Augur was working (started{' '}
+                {new Date(s.interrupted.startedAt).toLocaleTimeString()}). Everything up to the last step is saved.
               </span>
               <Button size="sm" icon="play" onClick={() => s.resume()} disabled={!s.dsConfig}>
                 Resume
@@ -275,42 +364,86 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
             </Stack>
           </Alert>
         )}
-        {variant === 'sidebar' && showPanel && <InvestigationPanel findings={session.findings} hypotheses={session.hypotheses} />}
+        {variant === 'sidebar' && showPanel && (
+          <div className={st.compactPanel}>
+            <InvestigationPanel findings={session.findings} hypotheses={session.hypotheses} />
+          </div>
+        )}
 
-        <div className={st.timeline} data-testid="claude-timeline">
-          {session.items.length === 0 && (
-            <div className={st.empty}>
-              <div className={st.emptyTitle}>{mode === 'investigate' ? 'Describe the symptom to investigate' : variant === 'sidebar' ? 'Ask about what you are looking at' : 'Ask about your metrics, logs, traces and alerts'}</div>
-              <div className={st.starters}>
-                {(variant === 'sidebar' && mode === 'chat' ? SIDEBAR_STARTERS : STARTERS[mode]).map((q) => (
-                  <Button key={q} variant="secondary" fill="outline" size="sm" onClick={() => submit(q)} disabled={!s.dsConfig}>
-                    {q}
-                  </Button>
-                ))}
-              </div>
-              {skills.length > 0 && (
-                <div className={st.muted}>
-                  Type <code>/</code> for skills: {skills.slice(0, 5).map((k) => `/${k.name}`).join(' ')}
+        <div className={st.timelineWrap}>
+          <div
+            ref={timelineRef}
+            className={st.timeline}
+            data-testid="claude-timeline"
+            onScroll={onTimelineScroll}
+            tabIndex={0}
+            aria-label="Conversation"
+          >
+            {session.items.length === 0 && (
+              <div className={st.empty}>
+                <div className={st.emptyTitle}>
+                  {mode === 'investigate'
+                    ? 'Describe the symptom to investigate'
+                    : variant === 'sidebar'
+                      ? 'Ask about what you are looking at'
+                      : 'Ask about your metrics, logs, traces and alerts'}
                 </div>
-              )}
-            </div>
+                <div className={st.starters}>
+                  {(variant === 'sidebar' && mode === 'chat' ? SIDEBAR_STARTERS : STARTERS[mode]).map((q) => (
+                    <Button
+                      key={q}
+                      variant="secondary"
+                      fill="outline"
+                      size="sm"
+                      onClick={() => submit(q)}
+                      disabled={!s.dsConfig}
+                    >
+                      {q}
+                    </Button>
+                  ))}
+                </div>
+                {skills.length > 0 && (
+                  <div className={st.muted}>
+                    Type <code>/</code> for skills:{' '}
+                    {skills
+                      .slice(0, 5)
+                      .map((k) => `/${k.name}`)
+                      .join(' ')}
+                  </div>
+                )}
+              </div>
+            )}
+            {session.items.map((it, i) => (
+              <TimelineItem
+                key={it.kind === 'tool' ? it.id : `${it.kind}-${i}`}
+                it={it}
+                s={s}
+                latestDraft={latestDraft}
+              />
+            ))}
+            {s.running && (
+              <div className={st.status}>
+                <Spinner inline /> {s.status || 'Working…'}
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+          {awayFromBottom && session.items.length > 0 && (
+            <Button className={st.jump} size="sm" variant="secondary" icon="arrow-down" onClick={toBottom}>
+              {s.running ? 'Jump to latest (running)' : 'Jump to latest'}
+            </Button>
           )}
-          {session.items.map((it, i) => (
-            <TimelineItem key={it.kind === 'tool' ? it.id : `${it.kind}-${i}`} it={it} s={s} latestDraft={latestDraft} />
-          ))}
-          {s.running && (
-            <div className={st.status}>
-              <Spinner inline /> {s.status || 'Working…'}
-            </div>
-          )}
-          <div ref={bottomRef} />
         </div>
 
         <div className={st.composer}>
           <Composer
             ref={composer}
             rows={variant === 'sidebar' ? 2 : 3}
-            placeholder={mode === 'investigate' ? 'e.g. p99 latency on payments doubled since 14:00 UTC. Why?' : 'Ask, build a dashboard, draft an alert… / for skills (Enter to send)'}
+            placeholder={
+              mode === 'investigate'
+                ? 'e.g. p99 latency on payments doubled since 14:00 UTC. Why?'
+                : 'Ask, build a dashboard, draft an alert… / for skills (Enter to send)'
+            }
             disabled={!s.dsConfig}
             skills={skills}
             onSend={sendText}
@@ -324,7 +457,8 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                   (s.usage.cache_read_input_tokens
                     ? ` (${Math.round((100 * s.usage.cache_read_input_tokens) / (s.usage.input_tokens + s.usage.cache_read_input_tokens + s.usage.cache_creation_input_tokens))}% cached)`
                     : '')}
-              {s.dsConfig && ` · ${s.model} via ${s.dsConfig.authMethod === 'oauth' ? 'your identity' : 'datasource key'}`}
+              {s.dsConfig &&
+                ` · ${s.model} via ${s.dsConfig.authMethod === 'oauth' ? 'your identity' : 'datasource key'}`}
             </span>
             <Stack gap={1}>
               {isInvestigation && hasAnswer && !s.running && (
@@ -338,10 +472,22 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                       {saving ? 'Saving…' : 'Save to Grafana'}
                     </Button>
                   )}
-                  <Button size="sm" variant="secondary" icon="download-alt" onClick={exportMarkdown} tooltip="Download the report as Markdown">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="download-alt"
+                    onClick={exportMarkdown}
+                    tooltip="Download the report as Markdown"
+                  >
                     Markdown
                   </Button>
-                  <Button size="sm" variant="secondary" icon="file-alt" onClick={exportPdf} tooltip="Print the report; choose Save as PDF">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="file-alt"
+                    onClick={exportPdf}
+                    tooltip="Print the report; choose Save as PDF"
+                  >
                     PDF
                   </Button>
                 </>
@@ -351,18 +497,33 @@ export function ChatView({ s, variant, autoStart }: ChatViewProps) {
                   Stop
                 </Button>
               ) : (
-                <Button icon={mode === 'investigate' ? 'search' : 'message'} onClick={() => submit()} disabled={composerEmpty || !s.dsConfig || s.runningElsewhere}>
+                <Button
+                  icon={mode === 'investigate' ? 'search' : 'message'}
+                  onClick={() => submit()}
+                  disabled={composerEmpty || !s.dsConfig || s.runningElsewhere}
+                >
                   {mode === 'investigate' ? 'Investigate' : 'Send'}
                 </Button>
               )}
             </Stack>
           </Stack>
-          {saveError && <Alert severity="error" title="Save failed">{saveError}</Alert>}
+          {saveError && (
+            <Alert severity="error" title="Save failed">
+              {saveError}
+            </Alert>
+          )}
         </div>
       </div>
-      {variant === 'page' && isInvestigation && <InvestigationPanel findings={session.findings} hypotheses={session.hypotheses} />}
+      {variant === 'page' && isInvestigation && (
+        <div className={st.sidePane}>
+          <InvestigationPanel findings={session.findings} hypotheses={session.hypotheses} />
+        </div>
+      )}
       <Modal title="My preferences" isOpen={prefsOpen} onDismiss={() => setPrefsOpen(false)}>
-        <p className={st.muted}>Personal rules Augur follows for you (stored in this browser), one per line. E.g. &quot;Prefer tables over prose&quot;, &quot;My team owns the payments namespace&quot;.</p>
+        <p className={st.muted}>
+          Personal rules Augur follows for you (stored in this browser), one per line. E.g. &quot;Prefer tables over
+          prose&quot;, &quot;My team owns the payments namespace&quot;.
+        </p>
         <TextArea rows={8} value={prefs} onChange={(e) => setPrefs(e.currentTarget.value)} />
         <Modal.ButtonRow>
           <Button variant="secondary" onClick={() => setPrefsOpen(false)}>
@@ -411,7 +572,13 @@ function TimelineItem({ it, s, latestDraft }: { it: Item; s: AugurSession; lates
       );
     case 'proposal': {
       const p = s.session.proposals[it.id];
-      return p ? <ProposalCard proposal={p} superseded={p.kind === 'dashboard' && it.id !== latestDraft} onApplied={s.noteApplied} /> : null;
+      return p ? (
+        <ProposalCard
+          proposal={p}
+          superseded={p.kind === 'dashboard' && it.id !== latestDraft}
+          onApplied={s.noteApplied}
+        />
+      ) : null;
     }
     case 'approval':
       return (
@@ -455,8 +622,20 @@ function TimelineItem({ it, s, latestDraft }: { it: Item; s: AugurSession; lates
   }
 }
 
+/** Follow new output while within this distance of the bottom; show "Jump to latest" beyond it. */
+const SCROLL_FOLLOW_PX = 120;
+const MIN_PAGE_HEIGHT = 420;
+const PAGE_BOTTOM_GAP = 16;
+
 const getStyles = (t: GrafanaTheme2) => ({
-  layout: css({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: t.spacing(2), height: '100%' }),
+  layout: css({
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    gridTemplateRows: 'minmax(0, 1fr)',
+    gap: t.spacing(2),
+    height: '100%',
+    minHeight: 0,
+  }),
   withSidebar: css({ [t.breakpoints.up('lg')]: { gridTemplateColumns: 'minmax(0, 1fr) 340px' } }),
   withRail: css({ [t.breakpoints.up('md')]: { gridTemplateColumns: '260px minmax(0, 1fr)' } }),
   withRailAndSidebar: css({
@@ -467,17 +646,44 @@ const getStyles = (t: GrafanaTheme2) => ({
     borderRight: `1px solid ${t.colors.border.weak}`,
     paddingRight: t.spacing(1.5),
     minHeight: 0,
-    maxHeight: 'calc(100vh - 160px)',
-    position: 'sticky',
-    top: 0,
+    height: '100%',
+    overflow: 'hidden',
     [t.breakpoints.down('md')]: { display: 'none' },
   }),
   listMode: css({ '& > :not([data-keep])': { display: 'none' } }),
   listPane: css({ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }),
   compact: css({ padding: t.spacing(1), gap: t.spacing(1) }),
-  main: css({ display: 'flex', flexDirection: 'column', gap: t.spacing(1.5), minHeight: 0 }),
-  timeline: css({ display: 'flex', flexDirection: 'column', gap: t.spacing(1.5), flex: 1, minHeight: 200 }),
-  empty: css({ margin: 'auto', textAlign: 'center', maxWidth: 720, padding: t.spacing(4, 1), display: 'flex', flexDirection: 'column', gap: t.spacing(2) }),
+  compactPanel: css({ maxHeight: '40%', flexShrink: 0, overflowY: 'auto', overscrollBehavior: 'contain' }),
+  main: css({ display: 'flex', flexDirection: 'column', gap: t.spacing(1.5), minHeight: 0, height: '100%' }),
+  timelineWrap: css({ position: 'relative', flex: 1, minHeight: 160, display: 'flex' }),
+  timeline: css({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: t.spacing(1.5),
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    paddingRight: t.spacing(1),
+    '&:focus-visible': { outline: `2px solid ${t.colors.primary.main}`, outlineOffset: 2 },
+  }),
+  jump: css({
+    position: 'absolute',
+    bottom: t.spacing(1),
+    left: '50%',
+    transform: 'translateX(-50%)',
+    boxShadow: t.shadows.z2,
+  }),
+  sidePane: css({ minHeight: 0, height: '100%', overflowY: 'auto', overscrollBehavior: 'contain' }),
+  empty: css({
+    margin: 'auto',
+    textAlign: 'center',
+    maxWidth: 720,
+    padding: t.spacing(4, 1),
+    display: 'flex',
+    flexDirection: 'column',
+    gap: t.spacing(2),
+  }),
   emptyTitle: css({ fontSize: t.typography.h4.fontSize }),
   starters: css({ display: 'flex', flexWrap: 'wrap', gap: t.spacing(1), justifyContent: 'center' }),
   user: css({
@@ -493,41 +699,51 @@ const getStyles = (t: GrafanaTheme2) => ({
     gap: t.spacing(0.5),
   }),
   assistant: css({ maxWidth: '100%', overflowX: 'auto', 'pre, code': { whiteSpace: 'pre-wrap' } }),
-  finding: css({ borderLeft: `3px solid ${t.colors.info.border}`, padding: t.spacing(0.5, 1), background: t.colors.background.secondary }),
+  finding: css({
+    borderLeft: `3px solid ${t.colors.info.border}`,
+    padding: t.spacing(0.5, 1),
+    background: t.colors.background.secondary,
+  }),
   sev_info: css({ borderLeftColor: t.colors.info.border }),
   sev_low: css({ borderLeftColor: t.colors.info.border }),
   sev_medium: css({ borderLeftColor: t.colors.warning.border }),
   sev_high: css({ borderLeftColor: t.colors.error.border }),
   sev_critical: css({ borderLeftColor: t.colors.error.main }),
-  approval: css({ border: `1px solid ${t.colors.warning.border}`, borderRadius: t.shape.radius.default, padding: t.spacing(1.5), display: 'flex', flexDirection: 'column', gap: t.spacing(1) }),
+  approval: css({
+    border: `1px solid ${t.colors.warning.border}`,
+    borderRadius: t.shape.radius.default,
+    padding: t.spacing(1.5),
+    display: 'flex',
+    flexDirection: 'column',
+    gap: t.spacing(1),
+  }),
   pre: css({ fontSize: 11, maxHeight: 220, overflow: 'auto', margin: 0, whiteSpace: 'pre-wrap' }),
   notice: css({ color: t.colors.text.secondary, fontSize: t.typography.bodySmall.fontSize }),
   link: css({ color: t.colors.text.link }),
   status: css({ color: t.colors.text.secondary, display: 'flex', gap: t.spacing(1), alignItems: 'center' }),
   composer: css({
-    position: 'sticky',
-    bottom: 0,
+    flexShrink: 0,
     background: t.colors.background.primary,
     paddingTop: t.spacing(1),
     display: 'flex',
     flexDirection: 'column',
     gap: t.spacing(1),
   }),
-  slash: css({ border: `1px solid ${t.colors.border.medium}`, borderRadius: t.shape.radius.default, background: t.colors.background.secondary }),
-  slashItem: css({ all: 'unset', display: 'block', width: '100%', padding: t.spacing(0.75, 1), cursor: 'pointer', '&:hover': { background: t.colors.action.hover } }),
+  slash: css({
+    border: `1px solid ${t.colors.border.medium}`,
+    borderRadius: t.shape.radius.default,
+    background: t.colors.background.secondary,
+  }),
+  slashItem: css({
+    all: 'unset',
+    display: 'block',
+    width: '100%',
+    padding: t.spacing(0.75, 1),
+    cursor: 'pointer',
+    '&:hover': { background: t.colors.action.hover },
+  }),
   muted: css({ color: t.colors.text.secondary, fontSize: t.typography.bodySmall.fontSize }),
 });
-
-/** Nearest ancestor that scrolls vertically (Grafana's page container), or the document. */
-function scrollParent(el: HTMLElement): HTMLElement | null {
-  for (let n = el.parentElement; n; n = n.parentElement) {
-    const o = getComputedStyle(n).overflowY;
-    if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) {
-      return n;
-    }
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? null;
-}
 
 interface ComposerHandle {
   submit: () => void;
@@ -548,12 +764,18 @@ interface ComposerProps {
  * Grafana 13's chrome, and after ~50 characters React aborted with error #185.
  */
 const Composer = React.memo(
-  React.forwardRef<ComposerHandle, ComposerProps>(function Composer({ rows, placeholder, disabled, skills, onSend, onEmptyChange }, ref) {
+  React.forwardRef<ComposerHandle, ComposerProps>(function Composer(
+    { rows, placeholder, disabled, skills, onSend, onEmptyChange },
+    ref
+  ) {
     const st = useStyles2(getStyles);
     const [text, setText] = useState('');
     const empty = !text.trim();
     useEffect(() => onEmptyChange(empty), [empty, onEmptyChange]);
-    const slash = text.startsWith('/') && !text.includes(' ') ? skills.filter((k) => k.name.startsWith(text.slice(1).toLowerCase())).slice(0, 6) : [];
+    const slash =
+      text.startsWith('/') && !text.includes(' ')
+        ? skills.filter((k) => k.name.startsWith(text.slice(1).toLowerCase())).slice(0, 6)
+        : [];
     const submit = useCallback(() => {
       if (text.trim()) {
         setText('');

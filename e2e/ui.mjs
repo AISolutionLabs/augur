@@ -51,6 +51,17 @@ async function runOnce(n) {
       const text = await page.evaluate(() => document.querySelector('[data-testid="claude-timeline"]')?.innerText ?? '');
       check(!/STUB REQUEST PROBLEMS/.test(text), `${tag}model requests from the browser were well-formed`);
       check(!/HTTP (4|5)\d\d/.test(text), `${tag}no tool or gateway errors shown`);
+      // The transcript scrolls inside its own pane and the composer stays on screen.
+      const layout = await page.evaluate(() => {
+        const tl = document.querySelector('[data-testid="claude-timeline"]');
+        const box = document.querySelector('textarea[aria-label="Message Augur"]')?.getBoundingClientRect();
+        return {
+          overflow: tl ? getComputedStyle(tl).overflowY : 'missing',
+          scrolls: tl ? tl.scrollHeight > tl.clientHeight : false,
+          composerVisible: !!box && box.bottom <= window.innerHeight + 1 && box.top >= 0,
+        };
+      });
+      check(layout.overflow === 'auto' && layout.composerVisible, `${tag}transcript scrolls in its own pane, composer visible (${JSON.stringify(layout)})`);
       check(!!(await page.$('[data-testid="claude-draft-card"]')), `${tag}dashboard draft card shown (not applied without a click)`);
       // The draft previews with real Grafana panels: every panel finishes loading and none errors.
       const preview = await page

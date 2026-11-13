@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.0
+
+- **Delete your history.** *Delete history* in the conversations list permanently deletes your conversations from this browser: everything, only chats or only investigations, optionally including pinned ones. The dialog shows how many will go; running conversations among them are stopped first, and nothing deleted can be restored by a finishing run or another tab. Investigations saved to Grafana are dashboards and are not affected.
+- **The conversation scrolls in its own pane.** On the Augur page the view fills the window: the transcript scrolls on its own with the composer always in view, and the conversations rail and the hypotheses panel scroll independently. New output is followed while you're at the end; scroll up to read and it stays put, with **Jump to latest** to return. Opening a conversation starts at its latest message. In the sidebar the same applies, and the hypotheses panel takes at most 40% of the height. Scrolling never moves Grafana's page container.
+
 ## 1.7.0
 
 A reliability release, following an independent review of 1.6.0.

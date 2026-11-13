@@ -211,13 +211,28 @@ export function isDeleted(id: string): boolean {
  * still unwinding, a pending debounced save or another tab cannot write it back.
  */
 export function deleteSession(id: string) {
+  deleteSessions([id]);
+}
+
+/** Deletes several conversations in one write (see deleteSession). */
+export function deleteSessions(ids: string[]) {
+  if (!ids.length) {
+    return;
+  }
+  const gone = new Set(ids);
   try {
-    localStorage.setItem(DELETED_KEY, JSON.stringify([id, ...tombstones().filter((x) => x !== id)].slice(0, MAX_TOMBSTONES)));
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(loadHistory().filter((s) => s.id !== id)));
-    if (localStorage.getItem(CURRENT_KEY) === id) {
+    localStorage.setItem(DELETED_KEY, JSON.stringify([...ids, ...tombstones().filter((x) => !gone.has(x))].slice(0, MAX_TOMBSTONES)));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(loadHistory().filter((s) => !gone.has(s.id))));
+    const current = localStorage.getItem(CURRENT_KEY);
+    if (current && gone.has(current)) {
       localStorage.removeItem(CURRENT_KEY);
     }
   } catch {}
+}
+
+/** Whether a conversation counts as an investigation (for filtering and bulk deletion). */
+export function isInvestigation(s: Pick<SessionState, 'mode' | 'investigation' | 'items'>): boolean {
+  return s.mode === 'investigate' || !!s.investigation || s.items.some((x) => x.kind === 'user' && x.mode === 'investigate');
 }
 
 let retentionMs = 0;

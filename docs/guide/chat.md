@@ -27,6 +27,10 @@ Augur works out queries itself, but specifics help:
 
 Every claim about data links to the query behind it. Click through to Explore to check it.
 
+## Scrolling
+
+The conversation scrolls in its own pane, so the message box stays in view. While you're at the end, new output is followed; scroll up to read earlier messages and the view stays where you are, with **Jump to latest** to return. Opening a conversation starts at its latest message. On the Augur page the conversations rail and the hypotheses panel scroll independently.
+
 ## Slash commands
 
 Type `/` to see your organization's [skills](../configure/app-settings.md#skills). `/kafka-lag orders-topic` runs that runbook with `orders-topic` as input.

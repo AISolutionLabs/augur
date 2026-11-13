@@ -55,7 +55,7 @@ Recommendations: keep `allowedTools` narrow, list read-only tools explicitly in 
 ## Data and storage
 
 - Conversations, run checkpoints and the evidence ledger of an in-progress session live in the user's browser (`localStorage`), unencrypted. This is a convenience store, not an audit archive: save investigations to Grafana for a durable record. Shared machines should use separate browser profiles; clearing site data removes them.
-- Admins can set **Keep conversations for (days)** (`historyRetentionDays`) so older conversations are deleted from users' browsers. Deleting a conversation is final: it is tombstoned so a run still unwinding, a pending save or another tab cannot restore it.
+- Admins can set **Keep conversations for (days)** (`historyRetentionDays`) so older conversations are deleted from users' browsers. Users can delete their whole history (or only chats or investigations) from the conversations list. Deleting a conversation is final: it is tombstoned so a run still unwinding, a pending save or another tab cannot restore it.
 - Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
 - Prompts and query results are sent to the configured model endpoint. Use a gateway (e.g. LiteLLM) with your organisation's data-handling controls if that matters to you.
 

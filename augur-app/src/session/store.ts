@@ -20,7 +20,7 @@ import { Capabilities, loadCapabilities } from '../agent/capabilities';
 import { ClaudeDsConfig, datasourceModelCaller, getClaudeConfig, grafanaHttp, listClaudeDataSources, listDataSources } from '../api';
 import { STEP_BUDGET } from '../constants';
 import { AugurSettings, DEFAULT_MAX_TOKENS_PER_RUN, effectiveTokens, loadPersonalRules, loadSettings, Skill } from '../settings';
-import { Item, loadCurrent, loadHistory, newSession, patchStored, persist, SessionState, setCurrent, deleteSession, isDeleted, setHistoryRetentionDays } from './history';
+import { Item, loadCurrent, loadHistory, newSession, patchStored, persist, SessionState, setCurrent, deleteSession, deleteSessions, isDeleted, isInvestigation, setHistoryRetentionDays } from './history';
 import { acquireRunLock, RunLock } from './runLock';
 
 export const RANGE_MS: Record<string, number> = { '15m': 9e5, '1h': 36e5, '3h': 108e5, '6h': 216e5, '12h': 432e5, '24h': 864e5, '2d': 1728e5, '7d': 6048e5 };
@@ -28,6 +28,8 @@ export const RANGE_MS: Record<string, number> = { '15m': 9e5, '1h': 36e5, '3h': 
 const ZERO_USAGE: Required<Usage> = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** Conversations that may run at the same time in one browser tab. */
+export type HistoryKind = 'all' | 'chat' | 'investigate';
+
 export const MAX_PARALLEL_RUNS = 3;
 
 /** What the conversation list shows about a run in progress. */
@@ -908,6 +910,44 @@ class AugurStore {
     });
     setCurrent(id);
     this.watchOtherTab();
+  };
+
+  /**
+   * Deletes the user's conversation history from this browser: all of it, or only chats or only
+   * investigations, optionally sparing pinned ones. Running conversations among them are stopped.
+   * Investigations saved to Grafana are dashboards and are not affected. Returns how many were deleted.
+   */
+  clearHistory = ({ kind = 'all', includePinned = false }: { kind?: HistoryKind; includePinned?: boolean } = {}): number => {
+    const candidates = new Map<string, SessionState>();
+    for (const x of loadHistory()) {
+      candidates.set(x.id, x);
+    }
+    for (const [id, r] of this.runs) {
+      candidates.set(id, r.session);
+    }
+    if (this.state.session.items.length) {
+      candidates.set(this.state.session.id, this.state.session);
+    }
+    const ids = [...candidates.values()]
+      .filter((x) => includePinned || !x.pinned)
+      .filter((x) => kind === 'all' || (kind === 'investigate') === isInvestigation(x))
+      .map((x) => x.id);
+    if (!ids.length) {
+      return 0;
+    }
+    deleteSessions(ids);
+    for (const id of ids) {
+      clearTimeout(this.persistTimers.get(id));
+      this.persistTimers.delete(id);
+      this.pendingNotes.delete(id);
+      this.runs.get(id)?.abort.abort();
+    }
+    if (ids.includes(this.state.session.id)) {
+      this.reset();
+    } else {
+      this.setNow({ history: loadHistory() });
+    }
+    return ids.length;
   };
 
   /** Deletes a conversation, stopping its run first. It is tombstoned, so nothing can save it again. */

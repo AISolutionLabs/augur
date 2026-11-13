@@ -24,6 +24,12 @@ Only one tab drives a given conversation's run. It holds a browser lock (the Web
 
 In your browser's local storage, per Grafana origin, unencrypted. Augur keeps the **60** most recent, and pinned ones stay at the top. When storage gets tight it compacts older conversations first (drops the step-by-step transcript, then shortens long tool outputs) before removing any. Your admin may also set a retention period, after which unpinned conversations are deleted.
 
+## Deleting your history
+
+**Delete history** at the bottom of the conversations list deletes your conversations from this browser in one go. Choose **Everything**, **Chats** or **Investigations**, and whether to **include pinned conversations**. The dialog shows how many will be deleted and how many of them are running; those are stopped first.
+
+Investigations you saved to Grafana are ordinary dashboards and aren't affected; delete those in Grafana if you need to. Clearing the browser's site data for Grafana also removes all conversations.
+
 **Deleting is final.** A deleted conversation is stopped and can't come back: not from a run that was still finishing, a pending save, or another tab.
 
 Conversations don't sync across browsers or devices. To share an investigation, [save it to Grafana or export it](reports.md).

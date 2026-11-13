@@ -545,6 +545,118 @@ describe('deleting a running conversation', () => {
   });
 });
 
+describe('scrolling the conversation', () => {
+  // jsdom has no layout: give the transcript a size so it can be "scrolled".
+  const sized = (el: HTMLElement, scrollHeight: number, clientHeight = 500) => {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => clientHeight });
+  };
+
+  test('the transcript scrolls on its own; scrolling up shows Jump to latest, which returns to the end', async () => {
+    modelScript = [{ content: [{ type: 'text', text: 'answer one' }] }];
+    renderPage();
+    await ask('first question');
+    await screen.findByText('answer one');
+    const timeline = screen.getByTestId('claude-timeline');
+    expect(timeline).toHaveAttribute('aria-label', 'Conversation');
+    sized(timeline, 3000);
+    timeline.scrollTop = 200;
+    fireEvent.scroll(timeline);
+    const jump = await screen.findByRole('button', { name: /Jump to latest/ });
+    // New output while the user reads older messages doesn't yank them down.
+    modelScript = [{ content: [{ type: 'text', text: 'answer two' }] }];
+    await ask('second question');
+    await screen.findByText('answer two');
+    expect(timeline.scrollTop).toBe(200);
+    fireEvent.click(jump);
+    expect(timeline.scrollTop).toBe(3000);
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Jump to latest/ })).not.toBeInTheDocument());
+  });
+
+  test('at the bottom, new output is followed and no jump button is shown', async () => {
+    modelScript = [{ content: [{ type: 'text', text: 'answer one' }] }];
+    renderPage();
+    await ask('first question');
+    await screen.findByText('answer one');
+    const timeline = screen.getByTestId('claude-timeline');
+    sized(timeline, 3000);
+    timeline.scrollTop = 2500; // at the end
+    fireEvent.scroll(timeline);
+    modelScript = [{ content: [{ type: 'text', text: 'answer two' }] }];
+    sized(timeline, 3600);
+    await ask('second question');
+    await screen.findByText('answer two');
+    expect(timeline.scrollTop).toBe(3600);
+    expect(screen.queryByRole('button', { name: /Jump to latest/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('deleting history', () => {
+  const stored = () => (JSON.parse(localStorage.getItem('augur-assistant-app/history') ?? '[]') as Array<{ title: string }>).map((x) => x.title).sort();
+  const seed = () => {
+    const mk = (id: string, mode: string, extra: object = {}) => ({
+      id,
+      title: id,
+      mode,
+      rangeKey: '1h',
+      createdAt: Date.now() - 1000,
+      updatedAt: Date.now() - 1000,
+      items: [{ kind: 'user', text: id, mode }],
+      messages: [],
+      proposals: {},
+      findings: [],
+      hypotheses: [],
+      ...extra,
+    });
+    localStorage.setItem(
+      'augur-assistant-app/history',
+      JSON.stringify([mk('chat one', 'chat'), mk('chat pinned', 'chat', { pinned: true }), mk('inv one', 'investigate'), mk('inv pinned', 'investigate', { pinned: true })])
+    );
+  };
+  const openDialog = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /Delete history/ }));
+    return screen.getByRole('dialog');
+  };
+
+  test('deletes only investigations, sparing pinned ones by default', async () => {
+    seed();
+    renderPage();
+    const dlg = await openDialog();
+    fireEvent.click(within(dlg).getByRole('radio', { name: 'Investigations' }));
+    expect(within(dlg).getByText(/1 conversation will be deleted/)).toBeInTheDocument();
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Delete 1 conversation' }));
+    await waitFor(() => expect(stored()).toEqual(['chat one', 'chat pinned', 'inv pinned']));
+    expect(await screen.findByText('Deleted 1 conversation.')).toBeInTheDocument();
+  });
+
+  test('deletes everything including pinned, stops running conversations, and nothing comes back', async () => {
+    seed();
+    let release: (v: any) => void = () => undefined;
+    modelScript = [new Promise((r) => (release = r))];
+    renderPage();
+    await ask('live question');
+    await waitFor(() => expect(modelCalls()).toHaveLength(1));
+    const dlg = await openDialog();
+    fireEvent.click(within(dlg).getByRole('checkbox', { name: 'Include pinned conversations' }));
+    expect(within(dlg).getByText(/5 conversations will be deleted, including 1 running \(stopped first\)/)).toBeInTheDocument();
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Delete 5 conversations' }));
+    await act(async () => release({ content: [{ type: 'text', text: 'late' }] }));
+    await act(() => new Promise((r) => setTimeout(r, 450)));
+    expect(stored()).toEqual([]);
+    expect(screen.queryAllByTestId('augur-conversation')).toHaveLength(0);
+    expect(screen.queryByText('live question')).not.toBeInTheDocument();
+  });
+
+  test('cancelling deletes nothing', async () => {
+    seed();
+    renderPage();
+    const dlg = await openDialog();
+    fireEvent.click(within(dlg).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(stored()).toEqual(['chat one', 'chat pinned', 'inv one', 'inv pinned']);
+  });
+});
+
 describe('multiple conversations', () => {
   const rail = () => within(screen.getByRole('complementary', { name: 'Conversations' }));
   const row = (title: string) => rail().getAllByTestId('augur-conversation').find((r) => r.textContent?.includes(title))!;

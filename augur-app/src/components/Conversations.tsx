@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { css, cx } from '@emotion/css';
 import { GrafanaTheme2 } from '@grafana/data';
-import { Badge, Button, Icon, IconButton, Input, Spinner, useStyles2 } from '@grafana/ui';
+import { Badge, Button, Checkbox, ConfirmModal, Icon, IconButton, Input, RadioButtonGroup, Spinner, Stack, Text, useStyles2 } from '@grafana/ui';
 
 import { AugurSession, MAX_PARALLEL_RUNS } from '../session/useAugurSession';
-import { SessionState } from '../session/history';
+import { isInvestigation, SessionState } from '../session/history';
+import { HistoryKind } from '../session/store';
 
 interface Row {
   id: string;
@@ -17,7 +18,14 @@ interface Row {
   pendingApprovals: number;
   interrupted: boolean;
   findings: number;
+  investigation: boolean;
 }
+
+const HISTORY_KINDS: Array<{ label: string; value: HistoryKind }> = [
+  { label: 'Everything', value: 'all' },
+  { label: 'Chats', value: 'chat' },
+  { label: 'Investigations', value: 'investigate' },
+];
 
 const DAY = 864e5;
 
@@ -76,6 +84,8 @@ export function Conversations({ s, onOpened }: { s: AugurSession; onOpened?: () 
   const [query, setQuery] = useState('');
   const [renaming, setRenaming] = useState<{ id: string; title: string } | undefined>();
   const [confirmDelete, setConfirmDelete] = useState<string | undefined>();
+  const [clearing, setClearing] = useState<{ kind: HistoryKind; includePinned: boolean } | undefined>();
+  const [cleared, setCleared] = useState<number | undefined>();
   const now = useNow(30_000);
 
   const rows = useMemo(() => {
@@ -94,6 +104,7 @@ export function Conversations({ s, onOpened }: { s: AugurSession; onOpened?: () 
         pendingApprovals: 0,
         interrupted: x.run?.status === 'interrupted' || x.run?.status === 'running',
         findings: x.findings.length,
+        investigation: isInvestigation(x),
       });
     };
     s.history.forEach(add);
@@ -101,7 +112,7 @@ export function Conversations({ s, onOpened }: { s: AugurSession; onOpened?: () 
     for (const [id, r] of Object.entries(s.runs)) {
       const row = byId.get(id);
       byId.set(id, {
-        ...(row ?? { id, mode: r.mode, updatedAt: r.startedAt, pendingApprovals: 0, findings: 0, interrupted: false }),
+        ...(row ?? { id, mode: r.mode, updatedAt: r.startedAt, pendingApprovals: 0, findings: 0, interrupted: false, investigation: r.mode === 'investigate' }),
         title: r.title,
         running: true,
         interrupted: false,
@@ -112,6 +123,27 @@ export function Conversations({ s, onOpened }: { s: AugurSession; onOpened?: () 
     const q = query.trim().toLowerCase();
     return [...byId.values()].filter((r) => !q || r.title.toLowerCase().includes(q)).sort((a, b) => b.updatedAt - a.updatedAt);
   }, [s.history, s.session, s.runs, query]);
+
+  // What "Delete history" would remove (ignores the search box: it acts on everything).
+  const toClear = useMemo(() => {
+    if (!clearing) {
+      return { total: 0, running: 0 };
+    }
+    const all = new Map<string, Row>();
+    for (const x of s.history) {
+      if (x.items.length) {
+        all.set(x.id, { pinned: x.pinned, investigation: isInvestigation(x), running: false } as Row);
+      }
+    }
+    if (s.session.items.length) {
+      all.set(s.session.id, { pinned: s.session.pinned, investigation: isInvestigation(s.session), running: false } as Row);
+    }
+    for (const [id, r] of Object.entries(s.runs)) {
+      all.set(id, { ...(all.get(id) ?? { investigation: r.mode === 'investigate' }), running: true } as Row);
+    }
+    const hit = [...all.values()].filter((r) => (clearing.includePinned || !r.pinned) && (clearing.kind === 'all' || (clearing.kind === 'investigate') === r.investigation));
+    return { total: hit.length, running: hit.filter((r) => r.running).length };
+  }, [clearing, s.history, s.session, s.runs]);
 
   const grouped = GROUPS.map((g) => ({ g, rows: rows.filter((r) => group(r, now) === g) })).filter((x) => x.rows.length);
   const runningCount = Object.keys(s.runs).length;
@@ -209,7 +241,37 @@ export function Conversations({ s, onOpened }: { s: AugurSession; onOpened?: () 
           </div>
         ))}
       </div>
-      <div className={st.footer}>Stored in this browser. Save an investigation to keep it in Grafana.</div>
+      <div className={st.footer}>
+        <span>{cleared !== undefined ? `Deleted ${cleared} conversation${cleared === 1 ? '' : 's'}.` : 'Stored only in this browser. Save an investigation to keep it in Grafana.'}</span>
+        <Button size="sm" variant="secondary" fill="text" icon="trash-alt" onClick={() => (setCleared(undefined), setClearing({ kind: 'all', includePinned: false }))}>
+          Delete history
+        </Button>
+      </div>
+      <ConfirmModal
+        isOpen={!!clearing}
+        title="Delete conversation history"
+        confirmText={toClear.total ? `Delete ${toClear.total} conversation${toClear.total === 1 ? '' : 's'}` : 'Nothing to delete'}
+        onDismiss={() => setClearing(undefined)}
+        onConfirm={() => {
+          if (clearing && toClear.total) {
+            setCleared(s.clearHistory(clearing));
+          }
+          setClearing(undefined);
+        }}
+        body={
+          clearing && (
+            <Stack direction="column" gap={2}>
+              <Text>Permanently delete your conversations from this browser. This can&apos;t be undone.</Text>
+              <RadioButtonGroup aria-label="What to delete" options={HISTORY_KINDS} value={clearing.kind} onChange={(kind) => setClearing({ ...clearing, kind })} />
+              <Checkbox label="Include pinned conversations" value={clearing.includePinned} onChange={(e) => setClearing({ ...clearing, includePinned: e.currentTarget.checked })} />
+              <Text color="secondary" variant="bodySmall">
+                {toClear.total} conversation{toClear.total === 1 ? '' : 's'} will be deleted
+                {toClear.running ? `, including ${toClear.running} running (stopped first)` : ''}. Investigations you saved to Grafana are dashboards and are not affected.
+              </Text>
+            </Stack>
+          )
+        }
+      />
     </div>
   );
 }
@@ -246,5 +308,13 @@ const getStyles = (t: GrafanaTheme2) => ({
   actions: css({ display: 'flex', alignItems: 'center', gap: t.spacing(0.25), paddingRight: t.spacing(0.5) }),
   hover: css({ opacity: 0, '&:focus-within': { opacity: 1 }, '@media (hover: none)': { opacity: 1 } }),
   rename: css({ display: 'flex', alignItems: 'center', gap: t.spacing(0.5), padding: t.spacing(0.5) }),
-  footer: css({ color: t.colors.text.disabled, fontSize: t.typography.bodySmall.fontSize, padding: t.spacing(0, 0.5) }),
+  footer: css({
+    color: t.colors.text.disabled,
+    fontSize: t.typography.bodySmall.fontSize,
+    padding: t.spacing(0, 0.5),
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: t.spacing(1),
+  }),
 });
