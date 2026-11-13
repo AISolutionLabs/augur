@@ -6,8 +6,8 @@ With the [Grafana Helm chart](https://github.com/grafana/helm-charts/tree/main/c
 
 ```yaml title="values.yaml"
 plugins:
-  - https://github.com/AniAIApps/augur/releases/download/v1.6.0/augur-assistant-app-1.6.0.zip;augur-assistant-app
-  - https://github.com/AniAIApps/augur/releases/download/v1.6.0/augur-claude-datasource-1.6.0.zip;augur-claude-datasource
+  - https://github.com/AniAIApps/augur/releases/download/v1.8.0/augur-assistant-app-1.8.0.zip;augur-assistant-app
+  - https://github.com/AniAIApps/augur/releases/download/v1.8.0/augur-claude-datasource-1.8.0.zip;augur-claude-datasource
 
 grafana.ini:
   plugins:

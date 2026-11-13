@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- No changes in the datasource; released alongside the app (history deletion, scrolling conversation pane).
+
 ## 1.7.0
 
 - **Usage limits enforced by the backend** (`limits`): concurrent model calls per user (default 16), calls per minute per user, tokens per user per day and tokens per day for the datasource, using the same effective-token weighting as the app's per-run budget. They apply to any caller of the resource API, so they can't be bypassed by skipping the app. Refusals are `429` with a typed error (`rate_limit_exceeded`, `concurrency_limit_exceeded` with `Retry-After`, or `budget_exceeded`). Counters are per datasource and per Grafana replica, kept across settings changes and reset on restart. New *Limits* section in the config editor.

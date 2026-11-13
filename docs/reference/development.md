@@ -52,8 +52,8 @@ Needs Docker, [mise](https://mise.jdx.dev/) and [uv](https://docs.astral.sh/uv/)
 
 ## Releasing
 
-- **One click:** *Actions → Release → Run workflow* with a version (`1.6.0`, or `1.6.0-rc.1`). It bumps both plugins, commits, tags and releases.
-- **Or tag it:** `git tag v1.6.0 && git push origin v1.6.0`.
+- **One click:** *Actions → Release → Run workflow* with a version (`1.9.0`, or `1.9.0-rc.1`). It bumps both plugins, commits, tags and releases.
+- **Or tag it:** `git tag v1.9.0 && git push origin v1.9.0`.
 
 Each release runs lint, tests, the Grafana 12.0 check and the full build (Linux, macOS and Windows backends), optionally signs ([Plugin signing](../getting-started/signing.md)), runs Grafana's plugin validator, and publishes both zips, `SHA256SUMS` and build-provenance attestations. Add a `## <version>` section to both CHANGELOGs first.
 

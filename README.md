@@ -153,7 +153,7 @@ The conversation is kept under a **token budget** (140k by default, estimated co
 
 ### Durability
 
-The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Only one tab drives a run at a time: other tabs see *Running in another tab* and take over automatically if that tab goes away (a 12-second lease). Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
+The agent runs in a module-level store, not inside a React component, so an investigation **keeps running when you close the sidebar or move around Grafana**. The page and the sidebar are two views of the same run. The transcript is **checkpointed after every step**. If the tab is reloaded, crashes, or the browser is closed mid-run, the session reopens with a **Resume** button that continues from the last checkpoint (unfinished tool calls are re-run as needed). Transient gateway failures (sleep or wake, 429, 5xx, overloaded) are retried with backoff, and the browser asks for confirmation before you close a tab with a run in progress. Only one tab drives a run at a time: it holds a browser lock (Web Locks API), so two tabs can't both start the same conversation; others see *Running in another tab* and can resume it if that tab goes away. Every model response counts toward the step limit, including server-side pauses. Runs still need an open Grafana tab; server-side scheduled runs are on the roadmap.
 
 Up to three conversations can run at once, each with its own lease, so you can start an investigation, switch to another conversation, and come back to it.
 
@@ -201,6 +201,7 @@ The docked sidebar uses Grafana's extension sidebar. On Grafana versions without
 | Models | **Discovered** from the endpoint's `/v1/models` with the caller's credentials (so a LiteLLM key or user token only sees its own models), optionally narrowed by a filter (`claude-*`). Requests for anything else are rejected server-side. Turn discovery off to use a fixed list. *Show models* previews what users will get. |
 | TLS | **Add CA certificate** (PEM, encrypted) and/or a **CA bundle file** path (e.g. a mounted ConfigMap): trusted *in addition to* the system roots, for both the endpoint and MCP servers. Skip verification is available but not recommended. |
 | MCP servers | Name, URL, auth (none / bearer / custom header / user's OAuth token), allowed-tool globs, read-only tool globs, role required for other tools, and approval policy. |
+| Limits | Enforced by the backend for every caller: concurrent calls per user (default 16), calls per minute per user, tokens per user per day, tokens per day for the datasource. Per Grafana replica; refusals are typed `429`s. |
 
 ```yaml
 apiVersion: 1
@@ -216,6 +217,9 @@ datasources:
       defaultModel: claude-sonnet-5-5
       allowedModels: ['claude-*']   # filter for the discovered list (modelDiscovery: off for a fixed list)
       tlsCACertFile: /etc/ssl/internal/ca.pem   # internal CA, mounted into the Grafana pod
+      limits:
+        tokensPerUserPerDay: 5000000   # effective tokens, resets 00:00 UTC
+        requestsPerMinutePerUser: 60
       mcpServers:
         - name: github
           url: https://mcp.example.internal/github/mcp
@@ -257,6 +261,7 @@ apps:
     jsonData:
       investigationFolderUid: incident-reviews
       enableSubAgents: true
+      historyRetentionDays: 30     # delete browser-stored conversations not updated for 30 days (pinned kept)
       rules:
         - { id: prod, scope: all, enabled: true, text: 'Production is the "Mimir prod" datasource; cluster label is k8s_cluster.' }
       skills:
@@ -271,6 +276,7 @@ apps:
 - **Rules** always apply. They can be scoped to chat, investigations or dashboards. Users can also add personal preferences, which are stored in their browser.
 - **Skills** are Markdown runbooks. Augur finds them while working (`search_skills`), and users run them as `/kafka-lag orders-topic`. Import `.md` files with front matter (`name`, `title`, `description`, `tags`).
 - **Infrastructure memory:** *Scan now* discovers services, namespaces and Tempo service-graph dependencies. It makes no model calls.
+- **History retention:** *Keep conversations for (days)* deletes conversations in users' browsers that haven't been updated for that long (pinned ones are kept).
 
 ---
 
@@ -279,7 +285,8 @@ apps:
 - **Sidebar:** open Augur from Grafana's sidebar on any dashboard, Explore or alert page and ask "what's wrong here?". It knows the page you're on.
 - **Panel menu:** *Ask Augur about this panel* / *Investigate with Augur*. **Explore toolbar:** *Ask Augur*. **Alert rules and instances:** *Investigate with Augur*. **Command palette:** *Ask Augur*.
 - **Investigate** mode shows live hypotheses and findings. Finish with **Save to Grafana**, which saves a dashboard containing the report, findings, hypotheses, evidence panels and annotations, using your folder permissions. Or export the report as **Markdown** or **PDF** (a print-ready report with the write-up, findings, hypotheses, evidence ledger and queries; choose *Save as PDF* in the print dialog). Saved investigations become searchable memory for future ones.
-- **Conversations:** chats and investigations are kept in a conversations list (a rail on the page, a list in the sidebar), with search, rename, pin and delete, grouped by Running, Pinned and date. Switching conversations doesn't stop a run: up to three run in parallel in the background, and conversations waiting for your approval are marked. The last 60 are kept per browser; when storage is tight, older transcripts are compacted before anything is dropped.
+- **Conversations:** chats and investigations are kept in a conversations list (a rail on the page, a list in the sidebar), with search, rename, pin and delete, grouped by Running, Pinned and date. Switching conversations doesn't stop a run: up to three run in parallel in the background, and conversations waiting for your approval are marked. The last 60 are kept per browser; when storage is tight, older transcripts are compacted before anything is dropped. **Delete history** removes everything, only chats or only investigations (optionally including pinned ones); deletion is final.
+- **Scrolling:** the conversation scrolls in its own pane with the message box always in view. New output is followed while you're at the end; scroll up to read and it stays put, with **Jump to latest** to return.
 
 ### Permissions
 
@@ -298,14 +305,15 @@ apps:
 
 - Credentials never reach the browser. Browser-supplied `Authorization`/`x-api-key` headers are never forwarded, and `extraHeaders` cannot override auth.
 - The model cannot write anything itself. Dashboard, silence and alert changes are proposals that the user applies. Dashboard edits use Grafana's optimistic version check, so a concurrent change is never overwritten, and every save is restorable from version history.
-- MCP authorization is enforced in the backend: only allow-listed tools that the server currently lists can be called, and only tools the **admin** marks read-only (`readOnlyTools`; servers' own `readOnlyHint` is ignored unless `trustReadOnlyHints` is set) skip the role check. Everything else requires the `writeRole` (default Editor) **and** an **Allow once** click in the UI. Sub-agents only get read-only tools.
+- MCP authorization is enforced in the backend: only allow-listed tools that the server currently lists (checked against a list at most a minute old) can be called, a tool the server redefined since it was listed is refused (definition fingerprints), responses must be valid JSON-RPC for the request, and only tools the **admin** marks read-only (`readOnlyTools`; servers' own `readOnlyHint` is ignored unless `trustReadOnlyHints` is set) skip the role check. Everything else requires the `writeRole` (default Editor) **and** an **Allow once** click in the UI. Sub-agents only get read-only tools.
 - The backend never follows HTTP redirects, so credentials cannot be bounced to another host.
 - Every data query is recorded in an **evidence ledger** (datasource, query, absolute time range, SHA-256 digest of the response, frame/row counts). Findings cite evidence ids (`E3`), and the ledger is saved with investigations and reports.
-- A per-run token ceiling (default 1.5M, configurable) stops runaway loops; the run then answers from what it has.
-- Tool output (logs, dashboards, annotations, MCP results) is treated as untrusted data, never as instructions. This is a mitigation, not a guarantee; the structural controls above are what limit the impact of prompt injection.
+- A per-run token ceiling (default 1.5M, configurable) stops runaway loops; the run then answers from what it has. **Backend usage limits** (concurrency, rate, daily token budgets per user and per datasource) hold even for clients that bypass the app.
+- Updating a dashboard saved from an earlier draft uses Grafana's version check, so changes made in Grafana since are never overwritten.
+- Tool output (logs, traces, dashboards, annotations, runbooks, MCP results and tool descriptions, sub-agent briefs) is treated as untrusted data, never as instructions. This is a mitigation, not a guarantee; the structural controls above are what limit the impact of prompt injection.
 - With OAuth forwarding, Augur forwards the user's token; your gateway and MCP servers must validate issuer, audience and expiry.
 - The backend accepts a fixed set of Messages API fields and enforces the model allow-list, `max_tokens` cap and request/response size limits.
-- Conversations and run checkpoints are stored only in the user's browser (localStorage). Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
+- Conversations and run checkpoints are stored only in the user's browser (localStorage, unencrypted). Users can delete their history; admins can set a retention period. Deleted conversations are tombstoned so nothing restores them. Saved investigations are ordinary Grafana dashboards, governed by folder permissions.
 
 See [SECURITY.md](SECURITY.md) for the full trust model and how to report a vulnerability.
 
@@ -370,8 +378,8 @@ The agent is UI-independent: tools take a `ToolContext` with an HTTP abstraction
 
 Releases are built and published by GitHub Actions ([`release.yml`](.github/workflows/release.yml)):
 
-- **One click:** *Actions → Release → Run workflow*, enter a version (e.g. `1.2.0`, or `1.2.0-rc.1` for a pre-release). The workflow bumps both plugins, commits, tags `v1.2.0` and releases.
-- **Or tag it yourself:** `git tag v1.2.0 && git push origin v1.2.0`.
+- **One click:** *Actions → Release → Run workflow*, enter a version (e.g. `1.9.0`, or `1.9.0-rc.1` for a pre-release). The workflow bumps both plugins, commits, tags `v1.9.0` and releases.
+- **Or tag it yourself:** `git tag v1.9.0 && git push origin v1.9.0`.
 
 Each release runs lint, tests, the Grafana 12.0 compatibility check and the full build (Go backends for Linux, macOS and Windows). It optionally signs the plugins, checks the archive layout, runs Grafana's plugin validator (advisory), and publishes both zips plus `SHA256SUMS` to GitHub Releases, with notes from the CHANGELOGs and build-provenance attestations (`gh attestation verify <zip> --repo AniAIApps/augur`). Add a `## <version>` section to both CHANGELOGs before releasing.
 

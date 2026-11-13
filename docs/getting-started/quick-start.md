@@ -21,7 +21,7 @@ Run Augur locally with Grafana, Prometheus, Loki and Tempo, preloaded with sampl
 
     ```bash
     git clone https://github.com/AniAIApps/augur && cd augur
-    VERSION=1.6.0   # see https://github.com/AniAIApps/augur/releases
+    VERSION=1.8.0   # see https://github.com/AniAIApps/augur/releases
     curl -LO https://github.com/AniAIApps/augur/releases/download/v$VERSION/augur-assistant-app-$VERSION.zip
     curl -LO https://github.com/AniAIApps/augur/releases/download/v$VERSION/augur-claude-datasource-$VERSION.zip
     unzip -q augur-assistant-app-$VERSION.zip -d /tmp/app && mv /tmp/app/*/ augur-app/dist
